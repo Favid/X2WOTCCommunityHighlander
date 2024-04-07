@@ -402,6 +402,62 @@ function EndConstantProjectileEffects( )
 			Projectiles[ Index ].ParticleEffectComponent.OnSystemFinished = none;
 			Projectiles[ Index ].ParticleEffectComponent.DeactivateSystem( );
 			Projectiles[ Index ].ParticleEffectComponent.KillParticlesForced( );
+			// Start Issue #720
+			/// HL-Docs: feature:ProjectilePerformanceDrain; issue:720; tags:tactical
+			/// The game uses a global pool `WorldInfo.MyEmitterPool` to store Particle System Components (PSCs),
+			/// which helps optimize performance. When a PSC is no longer needed, it is returned to the pool 
+			/// so that it can be reused again later.
+			///
+			/// To return a PSC back to the pool, the `EmitterPool::OnParticleSystemFinished()` function must be called, 
+			/// which usually happens seamlessly - the pool sets the `ParticleSystemComponent::OnSystemFinished` delegate 
+			/// to the aforementioned function when the PSC is initially borrowed from the pool 
+			/// (via `EmitterPool::SpawnEmitter`).
+			///
+			/// However, `X2UnifiedProjectile` overwrites the `OnSystemFinished` delegate with its own one 
+			/// after borrowing the PSC from the pool, which means the `EmitterPool::OnParticleSystemFinished()`
+			/// is never called for these PSCs. 
+			///
+			/// As such, the pool is never made aware that those PSCs are ready for reuse and when a new PCS is requested, 
+			/// the pool has no choice but to simply create a new one, resulting in the pool getting bloated 
+			/// with all the PSCs ever spawned by `X2UnifiedProjectile`s.
+			///
+			/// This bloat leads to two observable effects: endlessly increasing RAM usage and a significant 
+			/// performance degradation. The more projectiles are fired over the course of a mission, the worse 
+			/// these effects become. Frequent use of the Suppression ability or Idle Suppression mod 
+			/// kick the problem into overdrive.
+			///
+			/// To address this bug, we manually call `WorldInfo.MyEmitterPool.OnParticleSystemFinished()` on PSCs 
+			/// in `X2UnifiedProjectile` when the projectile is done with them.
+			///
+			/// **Compability note**: some particle systems cannot be returned directly after the projectile is done with the
+			/// particle system - doing so destoys trails/smoke/effects that dissipate over time (e.g. rocket trails). To
+			/// address this issue, we delay the return to pool (and the forced destruction of any remaining particles) by
+			/// 1 minute. If this is not enough for your particle system, you can override the behaviour in `XComGame.ini`.
+			/// Here's an example/template:
+			///
+			/// ```ini
+			/// [XComGame.CHHelpers]
+			/// +ProjectileParticleSystemExpirationOverrides=(ParticleSystemPathName="SomePackage.P_SomeParticleSystem", ExpiryTime=120)
+			/// ```
+			///
+			/// | Property | Value |
+			/// | -------- | ----- |
+			/// | `ParticleSystemPathName` | The full path to your ParticleSystem (what you configure with emitters in the editor) |
+			/// | `ExpiryTime` | Time in seconds to pass between the projectile being done with the system and its return to the pool |
+			///
+			/// Keep in mind that the above time (either the 1 min default or the override) is the max allowed delay - if 
+			/// a particle system finishes (and reports so by calling `PSC.OnSystemFinished`), the delay will be aborted 
+			/// and the PSC will be instantly returned to the pool. As such, there is no need/reason to manually set lower
+			/// expiration times than the default - just make sure that your particle system is properly configured in
+			/// the editor.
+			///
+			/// Mods that create Particle System Components using the Emitter Pool must carefully handle them the same way:
+			/// if the PSC's `OnSystemFinished` delegate is replaced, then `EmitterPool::OnParticleSystemFinished()` must
+			/// be called for this PSC manually when the PSC is no longer needed, otherwise the same "memory leak" 
+			/// will occur. This applies to all PSCs using the Emitter Pool, not just those in `X2UnifiedProjectile`.
+			WorldInfo.MyEmitterPool.OnParticleSystemFinished(Projectiles[ Index ].ParticleEffectComponent);
+			CancelDelayedReturnToPoolPSC(Projectiles[ Index ].ParticleEffectComponent);
+			// End Issue #720
 			Projectiles[ Index ].ParticleEffectComponent = none;
 			Projectiles[ Index ].SourceAttachActor.SetPhysics( PHYS_None );
 			Projectiles[ Index ].TargetAttachActor.SetPhysics( PHYS_None );
@@ -1064,15 +1120,36 @@ function FireProjectileInstance(int Index)
 	}
 }
 
+// Issue #720, #1076: switching this from foreach to for loop.
+// Since a foreach loop creates a copy (and ProjectileElementInstance is a struct)
+// the `ParticleEffectComponent = none` assignment was being "lost".
+// In vanilla game this made no difference, since the PSCs were never returned
+// to the pool, but with the #720 fixes, it can be disasterous: we return
+// the PSC to the pool here, then it's used for something else and then we
+// (the rest of X2UP) manipulate the transform/parameters of the PSC and/or
+// return it again, causing visual issues (or outright killing) the other effect
+// that is now using the PSC
 function OnParticleSystemFinished(ParticleSystemComponent PSystem)
 {
-	local ProjectileElementInstance Element;
+	//local ProjectileElementInstance Element;
+	local int i;
 
-	foreach Projectiles(Element)
+	//foreach Projectiles(Element)
+	for (i = 0; i < Projectiles.Length; i++)
 	{
-		if (Element.ParticleEffectComponent == PSystem)
+		//if (Element.ParticleEffectComponent == PSystem)
+		if (Projectiles[i].ParticleEffectComponent == PSystem)
 		{
-			Element.ParticleEffectComponent = none;
+			// Start Issue #720
+			/// HL-Docs: ref:ProjectilePerformanceDrain
+			// Allow the pool to reuse this Particle System's spot in the pool.
+			//WorldInfo.MyEmitterPool.OnParticleSystemFinished(Element.ParticleEffectComponent);
+			WorldInfo.MyEmitterPool.OnParticleSystemFinished(Projectiles[i].ParticleEffectComponent);
+			CancelDelayedReturnToPoolPSC(Projectiles[i].ParticleEffectComponent);
+			// End Issue #720
+
+			//Element.ParticleEffectComponent = none;
+			Projectiles[i].ParticleEffectComponent = none;
 			return;
 		}
 	}
@@ -2121,6 +2198,13 @@ state Executing
 				{
 					Projectiles[ Index ].ParticleEffectComponent.OnSystemFinished = none;
 					Projectiles[ Index ].ParticleEffectComponent.DeactivateSystem( );
+					// Start Issue #720
+					/// HL-Docs: ref:ProjectilePerformanceDrain
+					// Allow the pool to reuse this Particle System's spot in the pool.
+					// Cannot return to pool directly - doing so destoys trails/smoke/effects that dissipate over time.
+					//WorldInfo.MyEmitterPool.OnParticleSystemFinished(Projectiles[ Index ].ParticleEffectComponent);
+					DelayedReturnToPoolPSC(Projectiles[ Index ].ParticleEffectComponent);
+					// End Issue #720
 					Projectiles[ Index ].ParticleEffectComponent = none;
 				}
 
@@ -2169,6 +2253,13 @@ state Executing
 				{
 					Projectiles[ Index ].ParticleEffectComponent.OnSystemFinished = none;
 					Projectiles[ Index ].ParticleEffectComponent.DeactivateSystem( );
+					// Start Issue #720
+					/// HL-Docs: ref:ProjectilePerformanceDrain
+					// Allow the pool to reuse this Particle System's spot in the pool.
+					// Cannot return to pool directly - doing so destoys trails/smoke/effects that dissipate over time.
+					//WorldInfo.MyEmitterPool.OnParticleSystemFinished(Projectiles[ Index ].ParticleEffectComponent);
+					DelayedReturnToPoolPSC(Projectiles[ Index ].ParticleEffectComponent);
+					// End Issue #720
 					Projectiles[ Index ].ParticleEffectComponent = none;
 					//`RedScreen("Projectile " $ Index  $ " vfx for weapon " $ FireAction.SourceItemGameState.GetMyTemplateName() $ " still hasn't completed after 10 seconds past expected completion time");
 				}
@@ -2222,6 +2313,48 @@ state Executing
 
 Begin:
 }
+
+// Start Issue #720
+/// HL-Docs: ref:ProjectilePerformanceDrain
+private static function DelayedReturnToPoolPSC (ParticleSystemComponent PSC)
+{
+	local float Delay;
+	local int i;
+
+	i = class'CHHelpers'.default.ProjectileParticleSystemExpirationOverrides.Find('ParticleSystemPathName', PathName(PSC.Template));
+
+	if (i != INDEX_NONE)
+	{
+		Delay = class'CHHelpers'.default.ProjectileParticleSystemExpirationOverrides[i].ExpiryTime;
+	}
+	else if (class'CHHelpers'.default.ProjectileParticleSystemExpirationDefaultOverride >= 5)
+	{
+		Delay = class'CHHelpers'.default.ProjectileParticleSystemExpirationDefaultOverride;
+	}
+	else
+	{
+		// The default is 1 minute
+		Delay = 60;
+	}
+
+	class'CHEmitterPoolDelayedReturner'.static.GetSingleton().AddCountdown(PSC, Delay);
+}
+
+// This is a very extreme backup handler - we should never need to do this,
+// since the PSC reference is always nulled out after calling DelayedReturnToPoolPSC
+private static function CancelDelayedReturnToPoolPSC (ParticleSystemComponent PSC)
+{
+	local bool bRemoved;
+	
+	bRemoved = class'CHEmitterPoolDelayedReturner'.static.GetSingleton().TryRemoveCountdown(PSC);
+
+	if (bRemoved)
+	{
+		`RedScreen("CHL:" @ GetFuncName() @ "was successfull - this should never happen!" @ `showvar(PathName(PSC.Template)) @ GetScriptTrace());
+		`RedScreen(class'CHEmitterPoolDelayedReturner'.default.strInformCHL);
+	}
+}
+// End Issue #720
 
 DefaultProperties
 {

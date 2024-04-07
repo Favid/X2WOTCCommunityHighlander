@@ -150,7 +150,7 @@ function UpdateData()
 		}
 
 		Unit = XComGameState_Unit(`XCOMHISTORY.GetGameStateForObjectID(UnitRef.ObjectID));
-		RankImage = Unit.IsSoldier() ? class'UIUtilities_Image'.static.GetRankIcon(Unit.GetRank(), Unit.GetSoldierClassTemplateName()) : "";
+		RankImage = Unit.IsSoldier() ? Unit.GetSoldierRankIcon() : ""; // Issue #408
 		// Start Issue #106
 		ClassImage = Unit.IsSoldier() ? Unit.GetSoldierClassIcon() : Unit.GetMPCharacterTemplate().IconImage;
 		// End Issue #106
@@ -171,7 +171,11 @@ function UpdateData()
 				PromoteLabel = (Unit.ShowPromoteIcon()) ? class'UISquadSelect_ListItem'.default.m_strPromote : "";
 				Value4 = Caps(ActionState.GetStaffRisksAppliedString(StaffIndex)); // Value 4 is automatically red / negative!
 
-				if (!Unit.bCaptured)
+				// Issue #810: Don't display XP and cohesion gain if rewards weren't
+				// given on completion of the covert action (since XP and cohesion are
+				// not granted in that case).
+				/// HL-Docs: ref:CovertAction_PreventGiveRewards
+				if (!Unit.bCaptured && !ActionState.RewardsNotGivenOnCompletion)
 				{
 					Value1 = m_strGainedXP; // Gained Experience
 					CohesionUnitNames = GetCohesionRewardUnits();

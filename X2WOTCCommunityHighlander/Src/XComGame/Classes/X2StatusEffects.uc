@@ -216,6 +216,7 @@ var localized string BleedingFriendlyDesc;
 var localized string BleedingEffectAcquiredString;
 var localized string BleedingEffectTickedString;
 var localized string BleedingEffectLostString;
+var config bool BLEEDING_IGNORES_SHIELDS; // Single variable for Issue #629
 
 var config int ULTRASONICLURE_TURNS;
 var name UltrasonicLureName;
@@ -270,9 +271,12 @@ static function BleedingOutEffectRemoved(X2Effect_Persistent PersistentEffect, c
 
 	UnitState = XComGameState_Unit(NewGameState.ModifyStateObject(class'XComGameState_Unit', ApplyEffectParameters.TargetStateObjectRef.ObjectID));
 	if (!bCleansed)
-	{		
-		UnitState.SetCurrentStat(eStat_HP, 0);		
-		UnitState.OnUnitBledOut(NewGameState, PersistentEffect, ApplyEffectParameters.SourceStateObjectRef, ApplyEffectParameters);
+	{
+		if (UnitState.IsAlive())
+		{
+			UnitState.SetCurrentStat(eStat_HP, 0);
+			UnitState.OnUnitBledOut(NewGameState, PersistentEffect, ApplyEffectParameters.SourceStateObjectRef, ApplyEffectParameters);
+		}
 	}
 	else
 	{
@@ -792,6 +796,10 @@ static function X2Effect_PersistentStatChange CreateDisorientedStatusEffect(opti
 	PersistentStatChangeEffect.bRemoveWhenTargetDies = true;
 	PersistentStatChangeEffect.bIsImpairingMomentarily = true;
 
+	// Start Issue #475
+	PersistentStatChangeEffect.bForceReapplyOnRefresh = true;
+	// End Issue #475
+
 	PersistentStatChangeEffect.DamageTypes.AddItem(class'X2Item_DefaultDamageTypes'.default.DisorientDamageType);
 	if( bIsMentalDamage )
 	{
@@ -1131,6 +1139,28 @@ static function X2Effect_PersistentStatChange CreatePoisonedStatusEffect()
 	DamageEffect.DamageTypes.AddItem('Poison');
 	DamageEffect.bAllowFreeKill = false;
 	DamageEffect.bIgnoreArmor = true;
+	/// HL-Docs: feature:BurningAndPoisonedDamageBypassesShields; issue:89; tags:tactical
+	/// In base game, shields (eStat_ShieldHP) absorb damage from typical damage over time effects, 
+	/// such as burning or poisoned. Mods can override this behavior by setting the following
+	/// flags in `XComGameCore.ini`:
+	///
+	///```ini
+	///[XComGame.X2Effect_Burning]
+	///BURNED_IGNORES_SHIELDS=true ; Make burn and acid DOT ignore shields
+	///
+	///[XComGame.X2StatusEffects]
+	///POISONED_IGNORES_SHIELDS=true ; Make poison DOT ignore shields
+	///```
+	/// Note that `BURNED_IGNORES_SHIELDS` will apply to all instances of `X2Effect_Burning` that
+	/// use its `SetBurnDamage()` helper method to set up the burn damage effect.
+	///
+	/// `POISONED_IGNORES_SHIELDS` will apply to all instances of posioned effect created using 
+	/// the `X2StatusEffect::CreatePoisonedStatusEffect()` helper method.
+	///
+	/// This should cover all instance of these effects in the base game, but mods can potentially
+	/// disregard these helper methods.
+	///
+	/// [Refer to this feature](../tactical/BleedingDamageBypassesShields.md) to apply similar change to bleeding damage over time.
 	DamageEffect.bBypassShields = default.POISONED_IGNORES_SHIELDS; // Issue #89
 	PersistentStatChangeEffect.ApplyOnTick.AddItem(DamageEffect);
 
@@ -1647,6 +1677,7 @@ static function UnconsciousEffectRemoved(X2Effect_Persistent PersistentEffect, c
 
 	UnitState = XComGameState_Unit(NewGameState.ModifyStateObject(class'XComGameState_Unit', ApplyEffectParameters.TargetStateObjectRef.ObjectID));
 	UnitState.bUnconscious = false;
+	UnitState.ClearUnitValue('LadderKilledScored');
 
 	EventManager.TriggerEvent('UnitUnconsciousRemoved', UnitState, UnitState, NewGameState);
 }
@@ -1687,7 +1718,7 @@ static function BoundEffectAdded(X2Effect_Persistent PersistentEffect, const out
 		return;
 
 	// Immobilize to prevent scamper, panic, or movement from enabling this unit to move again.
-	BoundUnit.SetUnitFloatValue(class'X2Ability_DefaultAbilitySet'.default.ImmobilizedValueName, 1, eCleanup_Never);
+	BoundUnit.SetUnitFloatValue(class'X2Ability_DefaultAbilitySet'.default.ImmobilizedValueName, 1, eCleanup_BeginTactical);
 
 	`XEVENTMGR.TriggerEvent('UnitBound', BoundUnit, BindingUnit, NewGameState);
 }
@@ -1731,7 +1762,8 @@ static function BoundVisualizationTicked(XComGameState VisualizeGameState, out V
 
 	// We have to skip the viper for these visualizations because, although Vipers can never actually be bound through gameplay;,
 	// the Viper's Bind ability binds itself for animation visualization reasons.
-	if( UnitState.GetMyTemplateName() == 'Viper' )
+	if( (UnitState.GetMyTemplateName() == 'Viper') ||
+		(UnitState.GetMyTemplateName() == 'ViperMP') )
 	{
 		return;
 	}
@@ -1764,7 +1796,8 @@ static function BoundVisualizationRemoved(XComGameState VisualizeGameState, out 
 
 	// We have to skip the viper for these visualizations because, although Vipers can never actually be bound through gameplay;,
 	// the Viper's Bind ability binds itself for animation visualization reasons.
-	if( UnitState.GetMyTemplateName() == 'Viper' )
+	if( (UnitState.GetMyTemplateName() == 'Viper') ||
+		(UnitState.GetMyTemplateName() == 'ViperMP') )
 	{
 		return;
 	}
@@ -2280,6 +2313,25 @@ static function X2Effect_Persistent CreateBleedingStatusEffect(int NumTurns, int
 	DamageEffect.DamageTypes.AddItem('Bleeding');
 	DamageEffect.bAllowFreeKill = false;
 	DamageEffect.bIgnoreArmor = true;
+
+	/// HL-Docs: feature:BleedingDamageBypassesShields; issue:629; tags:tactical
+	/// In base game, shields (eStat_ShieldHP) absorb damage from typical damage over time 
+	/// bleeding effects, such as those applied by ADVENT Stiletto Rounds. 
+	/// Mods can override this behavior by setting the `BLEEDING_IGNORES_SHIELDS` flag
+	/// in `XComGameCore.ini`:
+	///
+	///```ini
+	///[XComGame.X2StatusEffects]
+	///BLEEDING_IGNORES_SHIELDS=true ; Make bleeding DOT ignore shields
+	///```
+	///
+	/// Note that this will apply only to bleeding effects created using the
+	/// `X2StatusEffect::CreateBleedingStatusEffect()` helper method, which
+	/// should cover all instance of bleeding DOT effects in the base game, 
+	/// but mods can potentially create their own bleeding effects, bypassing this helper method.
+	///
+	/// [Refer to this feature](../tactical/BurningAndPoisonedDamageBypassesShields.md) to apply similar change to burning, poisoned and acid damage over time.
+	DamageEffect.bBypassShields = default.BLEEDING_IGNORES_SHIELDS; // Single line for Issue #629
 	PersistentEffect.ApplyOnTick.AddItem(DamageEffect);
 
 	return PersistentEffect;
@@ -2434,8 +2486,12 @@ static function X2Effect_Persistent CreateUltrasonicLureTargetStatusEffect()
 	UltrasonicLureTargetEffect = new class'X2Effect_Persistent';
 	UltrasonicLureTargetEffect.EffectName = default.UltrasonicLureName;
 	UltrasonicLureTargetEffect.DuplicateResponse = eDupe_Ignore;
-	UltrasonicLureTargetEffect.BuildPersistentEffect(default.ULTRASONICLURE_TURNS,, true);
-	UltrasonicLureTargetEffect.SetDisplayInfo(ePerkBuff_Passive, default.UltrasonicLureFriendlyName, default.UltrasonicLureFriendlyDesc, "img:///UILibrary_PerkIcons.UIPerk_mark" );
+	// Start Issue #1286
+	/// HL-Docs: ref:Bugfixes; issue:1286
+	/// Keep lure effect alive when source dies, tick on turn begin. Adjust icon and displayinfo to display as debuff rather than passive.
+	UltrasonicLureTargetEffect.BuildPersistentEffect(default.ULTRASONICLURE_TURNS,false,false,,eGameRule_PlayerTurnBegin); 
+	UltrasonicLureTargetEffect.SetDisplayInfo(ePerkBuff_Penalty, default.UltrasonicLureFriendlyName, default.UltrasonicLureFriendlyDesc, "img:///UILibrary_XPACK_Common.PerkIcons.UIPerk_ultrasoniclure" ); 
+	// End Issue #1286
 	UltrasonicLureTargetEffect.bRemoveWhenTargetDies = true;
 	return UltrasonicLureTargetEffect;
 }

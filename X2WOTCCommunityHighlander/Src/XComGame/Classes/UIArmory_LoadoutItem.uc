@@ -54,13 +54,18 @@ simulated function UIArmory_LoadoutItem InitLoadoutItem(XComGameState_Item Item,
 	{
 		if (Item != None)
 		{
-			if ((ItemTemplate.bInfiniteItem || ItemTemplate.StartingItem) && !Item.HasBeenModified())
+			if (ItemTemplate.bInfiniteItem && !Item.HasBeenModified())
 			{
 				SetInfinite(true);
 			}
 			else
 			{
-				SetCount(class'UIUtilities_Strategy'.static.GetXComHQ().GetNumItemInInventory(ItemTemplate.DataName));
+				// Start Issue #1065
+				/// HL-Docs: ref:Bugfixes; issue:1065
+				/// `UIArmory_LoadoutItem` now shows the correct stack counts for modified finite items.
+				// SetCount(class'UIUtilities_Strategy'.static.GetXComHQ().GetNumItemInInventory(ItemTemplate.DataName));
+				SetCount(Item.Quantity);
+				// End Issue #1065
 			}
 		}
 	}
@@ -70,7 +75,10 @@ simulated function UIArmory_LoadoutItem InitLoadoutItem(XComGameState_Item Item,
 		SetDisabled(true, class'UIUtilities_Text'.static.GetColoredText(InitDisabledReason, eUIState_Bad));
 	}
 
-	if (ItemTemplate != none && ItemTemplate.DataName == 'Medikit' && class'XComGameState_HeadquartersXCom'.static.NeedsToEquipMedikitTutorial())
+	/// HL-Docs: ref:Bugfixes; issue:701
+	/// Allows armory UI to highlight the item the player needs to build during the tutorial even if it's not the item with the exact template name `'Medikit'`
+	if (ItemTemplate != none && ItemTemplate.DataName == class'UIInventory_BuildItems'.default.TutorialBuildItem // Issue #701 from 'Medikit'
+		&& class'XComGameState_HeadquartersXCom'.static.NeedsToEquipMedikitTutorial())
 	{
 		// spawn the attention icon externally so it draws on top of the button and image 
 		Spawn(class'UIPanel', self).InitPanel('attentionIconMC', class'UIUtilities_Controls'.const.MC_AttentionIcon)
@@ -130,8 +138,6 @@ simulated function UIArmory_LoadoutItem SetImage(XComGameState_Item Item, option
 	local int i;
 	local bool bUpdate;
 	local array<string> NewImages;
-	// Issue #171 variables
-	local array<X2DownloadableContentInfo> DLCInfos;
 
 	if(Item == none)
 	{
@@ -140,14 +146,6 @@ simulated function UIArmory_LoadoutItem SetImage(XComGameState_Item Item, option
 	}
 
 	NewImages = Item.GetWeaponPanelImages();
-
-	// Start Issue #171
-	DLCInfos = `ONLINEEVENTMGR.GetDLCInfos(false);
-	for(i = 0; i < DLCInfos.Length; ++i)
-	{
-		DLCInfos[i].OverrideItemImage(NewImages, EquipmentSlot, ItemTemplate, UIArmory(Screen).GetUnit());
-	}
-	// End Issue #171
 
 	bUpdate = false;
 	for( i = 0; i < NewImages.Length; i++ )

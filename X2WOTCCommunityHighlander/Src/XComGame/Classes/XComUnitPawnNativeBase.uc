@@ -655,6 +655,10 @@ simulated event PostInitAnimTree(SkeletalMeshComponent SkelComp)
 {
 	if (SkelComp == Mesh && Mesh.Animations != none)
 	{
+		// Start Issue #455
+		DLCInfoPostInitAnimTree(SkelComp);
+		// End Issue #455
+
 		if (AnimTreeController == none)
 		{
 			AnimTreeController = new class'XComAnimTreecontroller';
@@ -689,6 +693,28 @@ simulated event PostInitAnimTree(SkeletalMeshComponent SkelComp)
 	
 	Super.PostInitAnimTree(SkelComp);
 }
+
+// Start Issue #455
+simulated function DLCInfoPostInitAnimTree(SkeletalMeshComponent SkelComp)
+{
+	local array<X2DownloadableContentInfo> DLCInfos;
+	local X2DownloadableContentInfo DLCInfo;
+	local XGUnit Unit;
+	local XComGameState_Unit UnitState;
+
+	Unit = XGUnit(GetGameUnit());
+	if (Unit != none)
+	{
+		UnitState = Unit.GetVisualizedGameState();
+	}
+
+	DLCInfos = `ONLINEEVENTMGR.GetDLCInfos(false);
+	foreach DLCInfos(DLCInfo)
+	{
+		DLCInfo.UnitPawnPostInitAnimTree(UnitState, self, SkelComp);
+	}
+}
+// End Issue #455
 
 native function HideAllAttachments(bool ShouldHide = true);
 
@@ -764,12 +790,13 @@ simulated function XComUpdateAnimSetList()
 	local XComWeapon currentWeapon;
 	local XGUnit kUnit;
 	local XComPerkContent kPerkContent;
-	local XComGameState_Unit UnitState;
+	local XComGameState_Unit UnitState, TempUnitState;
 	local XComGameState_Effect TestEffect;
 	local XComGameStateHistory History;
 	local StateObjectReference EffectRef;
 	local XComGameState_Effect EffectState;
 	local X2Effect_AdditionalAnimSets AdditionalAnimSetsEffect;
+	local UIPawnMgr PawnMgr;
 	
 	// MHU - Attempt to reset animsets to default (usually rifle animset)
 	//       If the default animset doesn't exist, do nothing.
@@ -806,6 +833,22 @@ simulated function XComUpdateAnimSetList()
 			}
 		}
 
+		TempUnitState = XComGameState_Unit(`XCOMHISTORY.GetGameStateForObjectID(ObjectID));
+		if (TempUnitState == none) // if there isn't one in the history, check for a pawn manager because shell character pool is a thing.
+		{
+			foreach `XWORLDINFO.AllActors(class'UIPawnMgr', PawnMgr)
+				break;
+			TempUnitState = PawnMgr.GetUnitState( ObjectID );
+		}
+
+		if( TempUnitState != None )
+		{
+			XComAddAnimSets(TempUnitState.GetMyTemplate().AdditionalAnimSets);
+			if( TempUnitState.kAppearance.iGender == eGender_Female )
+			{
+				XComAddAnimSets(TempUnitState.GetMyTemplate().AdditionalAnimSetsFemale);
+			}
+		}
 
 		if( UnitState != None )
 		{
@@ -823,7 +866,7 @@ simulated function XComUpdateAnimSetList()
 		}
 
 		// Loop over extra anim sets added by any X2Effect_AdditionalAnimSetsEffect
-		if( UnitState != none )
+		if( UnitState != None )
 		{
 			History = `XCOMHISTORY;
 			foreach UnitState.AffectedByEffects(EffectRef)

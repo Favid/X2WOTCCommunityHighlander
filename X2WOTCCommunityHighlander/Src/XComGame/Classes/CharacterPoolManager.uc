@@ -301,7 +301,9 @@ function ECharacterPoolSelectionMode GetSelectionMode(ECharacterPoolSelectionMod
 	// check for mixed, 50-50 chance of random/pool
 	if( OverrideMode == eCPSM_Mixed || SelectionMode == eCPSM_Mixed )
 	{
-		if( `SYNC_RAND(2) == 1 )
+		/// HL-Docs: feature:MixedCharacterPoolChance; issue:599; tags:
+		/// Allows to alter the chance of using a Character Pool character when Character Pool is in Mixed mode.
+		if (`SYNC_RAND(100) < class'CHHelpers'.default.iMixedCharacterPoolChance) // Single line for Issue #599
 			return eCPSM_PoolOnly;
 		else
 			return eCPSM_RandomOnly;
@@ -444,6 +446,8 @@ function XComGameState_Unit CreateCharacter(XComGameState StartState, optional E
 		`assert(CharacterGenerator != none);
 
 		// Single Line for Issue #70
+		/// HL-Docs: ref:Bugfixes; issue:70
+		/// `CharacterPoolManager:CreateCharacter` now honors ForceCountry
 		CharacterGeneratorResult = CharacterGenerator.CreateTSoldier(CharacterTemplateName, , ForceCountry);
 
 		SoldierState.SetTAppearance(CharacterGeneratorResult.kAppearance);

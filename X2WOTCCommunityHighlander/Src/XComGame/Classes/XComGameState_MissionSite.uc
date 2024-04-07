@@ -1890,8 +1890,68 @@ function string GetUIButtonIcon()
 		StrButtonIcon = "img:///UILibrary_StrategyImages.X2StrategyMap.MissionIcon_GoldenPath";
 	};
 
+	// Start Issue #537
+	TriggerOverrideMissionSiteIconImage(StrButtonIcon);
+	// End Issue #537
+
 	return StrButtonIcon;
 }
+
+// Start Issue #537
+//
+// Fires an 'OverrideMissionSiteIconImage' event that allows mods to override
+// the image path used for the mission site icon in the Geoscape HUD's bottom
+// bar.
+//
+// The event itself takes the form:
+//
+//   {
+//      ID: OverrideMissionSiteIconImage,
+//      Data: [inout string ImagePath],
+//      Source: self (XCGS_MissionSite)
+//   }
+//
+simulated function TriggerOverrideMissionSiteIconImage(out string ImagePath)
+{
+	local XComLWTuple Tuple;
+
+	Tuple = new class'XComLWTuple';
+	Tuple.Id = 'OverrideMissionSiteIconImage';
+	Tuple.Data.Add(1);
+	Tuple.Data[0].Kind = XComLWTVString;
+	Tuple.Data[0].s = ImagePath;
+
+	`XEVENTMGR.TriggerEvent('OverrideMissionSiteIconImage', Tuple, self);
+
+	ImagePath = Tuple.Data[0].s;
+}
+// End Issue #537
+
+// Start issue #635
+/// HL-Docs: feature:OverrideMissionImage; issue:635; tags:strategy,ui
+/// Allows overriding the image shown for a mission in the `UIMission` screen.
+///
+/// ```event
+/// EventID: OverrideMissionImage,
+/// EventData: [inout string ImagePath],
+/// EventSource: XComGameState_MissionSite (MissionState),
+/// NewGameState: none
+/// ```
+function string GetMissionImage ()
+{
+	local XComLWTuple Tuple;
+
+	Tuple = new class'XComLWTuple';
+	Tuple.Id = 'OverrideMissionImage';
+	Tuple.Data.Add(1);
+	Tuple.Data[0].Kind = XComLWTVString;
+	Tuple.Data[0].s = GetMissionSource().MissionImage; // Vanilla logic
+
+	`XEVENTMGR.TriggerEvent('OverrideMissionImage', Tuple, self);
+
+	return Tuple.Data[0].s;
+}
+// End issue #635
 
 //---------------------------------------------------------------------------------------
 function UpdateSitrepTags()

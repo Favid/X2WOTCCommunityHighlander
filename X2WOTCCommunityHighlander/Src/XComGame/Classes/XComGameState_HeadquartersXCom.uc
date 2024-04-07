@@ -696,6 +696,11 @@ function AddToCrew(XComGameState NewGameState, XComGameState_Unit NewUnit )
 	OnCrewMemberAdded(NewGameState, NewUnit);
 }
 
+function AddToCrewNoStrategy( XComGameState_Unit NewUnit )
+{
+	Crew.AddItem( NewUnit.GetReference( ) );
+}
+
 function RemoveFromCrew( StateObjectReference CrewRef )
 {
 	Crew.RemoveItem(CrewRef);
@@ -2640,8 +2645,48 @@ function int GetScienceScore(optional bool bAddLabBonus = false)
 		}
 	}
 
-	return Score;
+	// Start Issue #626
+	return TriggerOverrideScienceScore(Score, bAddLabBonus);
+	// End Issue #626
 }
+
+// Start Issue #626
+//
+// Fires an 'OverrideScienceScore' event that allows listeners to override
+// the current science score, for example to apply bonuses or to remove scientists
+// that are on other jobs. If the `AddLabBonus` is true, then the game is
+// calculating the actual science score contributing to tech research progress.
+// If it's false, then the game is just checking whether a tech's or item's
+// science score requirement has been met.
+//
+// The event takes the form:
+//
+//  {
+//     ID: OverrideScienceScore,
+//     Data: [inout int ScienceScore, in bool AddLabBonus],
+//     Source: self (XCGS_HeadquartersXCom)
+//  }
+//
+// This function returns the new science score (or the original one if no listeners
+// modified it).
+//
+function int TriggerOverrideScienceScore(int BaseScienceScore, bool AddLabBonus)
+{
+	local XComLWTuple OverrideTuple;
+
+	OverrideTuple = new class'XComLWTuple';
+	OverrideTuple.Id = 'OverrideScienceScore';
+	OverrideTuple.Data.Add(2);
+	OverrideTuple.Data[0].Kind = XComLWTVInt;
+	OverrideTuple.Data[0].i = BaseScienceScore;
+	OverrideTuple.Data[1].Kind = XComLWTVBool;
+	OverrideTuple.Data[1].b = AddLabBonus;
+
+	`XEVENTMGR.TriggerEvent('OverrideScienceScore', OverrideTuple, self);
+
+	return OverrideTuple.Data[0].i;
+}
+// End Issue #626
 
 //---------------------------------------------------------------------------------------
 native function bool IsUnitInSquad(StateObjectReference UnitRef);
@@ -4179,7 +4224,7 @@ function bool PutItemInInventory(XComGameState AddToGameState, XComGameState_Ite
 		}
 	}
 
-	if( !bLoot && ItemTemplate.OnAcquiredFn != None )
+	if( !bLoot && (ItemTemplate.OnAcquiredFn != None) && ItemTemplate.HideInInventory )
 	{
 		HQModified = ItemTemplate.OnAcquiredFn(AddToGameState, ItemState) || HQModified;
 	}
@@ -4606,6 +4651,26 @@ static function UpgradeItems(XComGameState NewGameState, name CreatorTemplateNam
 			if (!XComHQ.HasItem(UpgradeItemTemplate))
 			{
 				UpgradedItemState = UpgradeItemTemplate.CreateInstanceFromTemplate(NewGameState);
+				
+				/// HL-Docs: feature:ItemUpgraded; issue:289; tags:strategy
+				/// This is an event that allows mods to perform non-standard handling to item states
+				/// when they are upgraded to a new tier. It is fired up to four times during upgrading:
+				/// * When upgrading the infinite item, if any.
+				/// * When upgrading utility items, like grenades and medkits.
+				/// * When upgrading unequipped items that have attachments
+				/// * When upgrading equipped items that have attachments
+				///
+				/// Note: EventSource (BaseItem) will be `none` when the event is triggered by upgrading an infinite item.
+				/// This is because infinite items are created rather than upgraded.
+				/// ```event
+				/// EventID: ItemUpgraded,
+				/// EventData: XComGameState_Item (UpgradedItem),
+				/// EventSource: XComGameState_Item (BaseItem),
+				/// NewGameState: yes
+				/// ```
+				// Single line for Issue #289 - handle upgrades for infinite items
+				// There are three more event triggers with this EventID in this function.
+				`XEVENTMGR.TriggerEvent('ItemUpgraded', UpgradedItemState, none, NewGameState);
 				XComHQ.AddItemToHQInventory(UpgradedItemState);
 			}
 		}
@@ -4623,6 +4688,8 @@ static function UpgradeItems(XComGameState NewGameState, name CreatorTemplateNam
 					// Otherwise match the base items quantity
 					UpgradedItemState = UpgradeItemTemplate.CreateInstanceFromTemplate(NewGameState);
 					UpgradedItemState.Quantity = BaseItemState.Quantity;
+					// Single line for Issue #289 - handle upgrades for utility items like grenades and medkits
+					`XEVENTMGR.TriggerEvent('ItemUpgraded', UpgradedItemState, BaseItemState, NewGameState);
 
 					// Then add the upgrade item and remove all of the base items from the inventory
 					XComHQ.PutItemInInventory(NewGameState, UpgradedItemState);
@@ -4639,18 +4706,27 @@ static function UpgradeItems(XComGameState NewGameState, name CreatorTemplateNam
 			InventoryItemState = XComGameState_Item(History.GetGameStateForObjectID(InventoryItemRefs[iItems].ObjectID));
 			foreach ItemsToUpgrade(BaseItemTemplate)
 			{
-				if (InventoryItemState.GetMyTemplateName() == BaseItemTemplate.DataName && InventoryItemState.GetMyWeaponUpgradeTemplates().Length > 0)
+				// Single line for Issue #306
+				if (InventoryItemState.GetMyTemplateName() == BaseItemTemplate.DataName && InventoryItemState.GetMyWeaponUpgradeCount() > 0)
 				{
 					UpgradedItemState = UpgradeItemTemplate.CreateInstanceFromTemplate(NewGameState);
 					UpgradedItemState.WeaponAppearance = InventoryItemState.WeaponAppearance;
 					UpgradedItemState.Nickname = InventoryItemState.Nickname;
 
-					// Transfer over all weapon upgrades to the new item
-					WeaponUpgrades = InventoryItemState.GetMyWeaponUpgradeTemplates();
-					foreach WeaponUpgrades(WeaponUpgradeTemplate)
+					// Some special weapons already have attachments. If so, do not put older
+					// attachments onto the upgraded weapon
+					// Single line for Issue #306
+					if (UpgradedItemState.GetMyWeaponUpgradeCount() == 0)
 					{
-						UpgradedItemState.ApplyWeaponUpgradeTemplate(WeaponUpgradeTemplate);
+						// Transfer over all weapon upgrades to the new item
+						WeaponUpgrades = InventoryItemState.GetMyWeaponUpgradeTemplates();
+						foreach WeaponUpgrades(WeaponUpgradeTemplate)
+						{
+							UpgradedItemState.ApplyWeaponUpgradeTemplate(WeaponUpgradeTemplate);
+						}
 					}
+					// Single line for Issue #289 - handle upgrades for unequipped items with attachments
+					`XEVENTMGR.TriggerEvent('ItemUpgraded', UpgradedItemState, InventoryItemState, NewGameState);
 
 					// Delete the old item, and add the new item to the inventory
 					NewGameState.RemoveStateObject(InventoryItemState.GetReference().ObjectID);
@@ -4683,11 +4759,20 @@ static function UpgradeItems(XComGameState NewGameState, name CreatorTemplateNam
 							// Remove the old item from the soldier and transfer over all weapon upgrades to the new item
 							SoldierState = XComGameState_Unit(NewGameState.ModifyStateObject(class'XComGameState_Unit', Soldiers[iSoldier].ObjectID));
 							SoldierState.RemoveItemFromInventory(InventoryItemState, NewGameState);
-							WeaponUpgrades = InventoryItemState.GetMyWeaponUpgradeTemplates();
-							foreach WeaponUpgrades(WeaponUpgradeTemplate)
+
+							// Some special weapons already have attachments. If so, do not put older
+							// attachments onto the upgraded weapon
+							// Single line for Issue #306
+							if (UpgradedItemState.GetMyWeaponUpgradeCount() == 0)
 							{
-								UpgradedItemState.ApplyWeaponUpgradeTemplate(WeaponUpgradeTemplate);
+								WeaponUpgrades = InventoryItemState.GetMyWeaponUpgradeTemplates();
+								foreach WeaponUpgrades(WeaponUpgradeTemplate)
+								{
+									UpgradedItemState.ApplyWeaponUpgradeTemplate(WeaponUpgradeTemplate);
+								}
 							}
+							// Single line for Issue #289 - handle upgrades for equipped items with attachments
+							`XEVENTMGR.TriggerEvent('ItemUpgraded', UpgradedItemState, InventoryItemState, NewGameState);
 
 							// Delete the old item
 							NewGameState.RemoveStateObject(InventoryItemState.GetReference().ObjectID);
@@ -6858,7 +6943,8 @@ function CheckForInspiredTechs(XComGameState NewGameState)
 			// Prevent any techs which could be made instant (autopsies), or which have already been reduced by purchasing tech reductions from the black market
 			// and only inspire techs which the player can afford
 			if (!TechTemplate.bCheckForceInstant && AvailableTechState.TimeReductionScalar < 0.001f && !HasPausedProject(AvailableTechRefs[TechIndex]) &&
-				MeetsRequirmentsAndCanAffordCost(TechTemplate.Requirements, TechTemplate.Cost, default.ResearchCostScalars, , TechTemplate.AlternateRequirements))
+				MeetsRequirmentsAndCanAffordCost(TechTemplate.Requirements, TechTemplate.Cost, default.ResearchCostScalars, , TechTemplate.AlternateRequirements) &&
+				/* Issue #633 */ TriggerCanTechBeInspired(AvailableTechState, NewGameState))
 			{
 				AvailableTechState = XComGameState_Tech(NewGameState.ModifyStateObject(class'XComGameState_Tech', AvailableTechState.ObjectID));
 				AvailableTechState.bInspired = true;
@@ -6882,6 +6968,35 @@ function CheckForInspiredTechs(XComGameState NewGameState)
 		}
 	}
 }
+
+// Start Issue #633
+/// HL-Docs: feature:CanTechBeInspired; issue:633; tags:strategy
+/// The `CanTechBeInspired` event allows mods to forbid a tech from being inspired. 
+/// This provides an important lever for balancing the strategy game. 
+/// It's particularly important for repeatable techs, which the inspiration mechanic doesn't seem to handle very well 
+/// (the techs remain inspired even after the first inspired research of them is complete).
+///
+///```event
+///EventID: CanTechBeInspired,
+///EventData: [inout bool bCanTechBeInspired],
+///EventSource: XComGameState_Tech (TechState),
+///NewGameState: yes
+///```
+private function bool TriggerCanTechBeInspired(XComGameState_Tech TechState, XComGameState NewGameState)
+{
+	local XComLWTuple Tuple;
+
+	Tuple = new class'XComLWTuple';
+	Tuple.Id = 'CanTechBeInspired';
+	Tuple.Data.Add(1);
+	Tuple.Data[0].Kind = XComLWTVBool;
+	Tuple.Data[0].b = true;
+
+	`XEVENTMGR.TriggerEvent('CanTechBeInspired', Tuple, TechState, NewGameState);
+
+	return Tuple.Data[0].b;
+}
+// End Issue #633
 
 private function bool CanActivateBreakthroughTech()
 {
@@ -7384,7 +7499,14 @@ function GeneratedMissionData GetGeneratedMissionData(int MissionID)
 		{
 			GeneratedMission.BattleOpName = class'XGMission'.static.GenerateOpName(false);
 		}
-		arrGeneratedMissionData.AddItem(GeneratedMission);
+		
+		/// HL-Docs: ref:Bugfixes; issue:1188
+		/// Add a none-check for `MissionState` before adding the generated mission entry to the array
+		/// to avoid bloating it with empty entries.
+		if (MissionState != none)
+		{
+			arrGeneratedMissionData.AddItem(GeneratedMission);
+		}
 	}
 	else
 	{
@@ -7896,6 +8018,21 @@ function GetResistanceEvents(out array<HQEvent> arrEvents)
 }
 
 //---------------------------------------------------------------------------------------
+// chl issue #518 start: added tuple & event 'ForceNoCovertActionNagFirstMonth'
+
+/// HL-Docs: feature:GetCovertActionEvents_Settings; issue:391; tags:strategy,ui
+/// Allows configuring the behavior of covert actions in the event queue.  
+/// `AddAll` allows multiple covert actions, `InsertSorted` inserts them into position
+/// based on time remaining.
+///
+/// Default: Only one covert action is added at the end.
+///
+/// ```event
+/// EventID: GetCovertActionEvents_Settings,
+/// EventData: [out bool AddAll, out bool InsertSorted],
+/// EventSource: XComGameState_HeadquartersXCom (XComHQ),
+/// NewGameState: none
+/// ```
 function GetCovertActionEvents(out array<HQEvent> arrEvents)
 {
 	local XComGameStateHistory History;
@@ -7903,9 +8040,30 @@ function GetCovertActionEvents(out array<HQEvent> arrEvents)
 	local XComGameState_HeadquartersResistance ResHQ;
 	local HQEvent kEvent;
 	local bool bActionFound, bRingBuilt;
+	local XComLWTuple Tuple1, Tuple2; // chl issue #391, #518
 
 	History = `XCOMHISTORY;
+
+	// Start Issue #391
+	Tuple1 = new class'XComLWTuple';
+	Tuple1.Id = 'GetCovertActionEvents_Settings';
+	Tuple1.Data.Add(2);
+	Tuple1.Data[0].kind = XComLWTVBool;
+	Tuple1.Data[0].b = false; // AddAll
+	Tuple1.Data[1].kind = XComLWTVBool;
+	Tuple1.Data[1].b = false; // InsertSorted
+
+	`XEVENTMGR.TriggerEvent('GetCovertActionEvents_Settings', Tuple1, self);
+	// End Issue #391
 	
+	Tuple2 = new class'XComLWTuple';
+	Tuple2.Id = 'OverrideNoCaEventMinMonths';
+	Tuple2.Data.Add(1);
+	Tuple2.Data[0].kind = XComLWTVInt;
+	Tuple2.Data[0].i = 1;
+
+	`XEVENTMGR.TriggerEvent('OverrideNoCaEventMinMonths', Tuple2, self);
+
 	foreach History.IterateByClassType(class'XComGameState_CovertAction', ActionState)
 	{
 		if (ActionState.bStarted)
@@ -7915,16 +8073,38 @@ function GetCovertActionEvents(out array<HQEvent> arrEvents)
 			kEvent.ImagePath = class'UIUtilities_Image'.const.EventQueue_Resistance;
 			kEvent.ActionRef = ActionState.GetReference();
 			kEvent.bActionEvent = true;
-			//Add directly to the end of the events list, not sorted by hours. 
-			arrEvents.AddItem(kEvent);
+
+			// Start Issue #391
+			if (!Tuple1.Data[1].b)
+			{
+			// End Issue #391
+				//Add directly to the end of the events list, not sorted by hours. 
+				arrEvents.AddItem(kEvent);
+			// Start Issue #391
+			}
+			else
+			{
+				AddEventToEventList(arrEvents, kEvent);
+			}
+			// End Issue #391
+
 			bActionFound = true;
-			break; // We only need to display one Action at a time
+
+			// Start Issue #391
+			if (!Tuple1.Data[0].b)
+			{
+			// End Issue #391
+				break; // We only need to display one Action at a time
+			// Start Issue #391
+			}
+			// End Issue #391
 		}
 	}
 
 	ResHQ = XComGameState_HeadquartersResistance(History.GetSingleGameStateObjectForClass(class'XComGameState_HeadquartersResistance'));
 	bRingBuilt = HasFacilityByName('ResistanceRing');
-	if (!bActionFound && (ResHQ.NumMonths >= 1 || bRingBuilt))
+
+	if (!bActionFound && (ResHQ.NumMonths >= Tuple2.Data[0].i /* chl issue #518 */ || bRingBuilt))
 	{
 		if (bRingBuilt)
 			kEvent.Data = CovertActionsGoToRing;

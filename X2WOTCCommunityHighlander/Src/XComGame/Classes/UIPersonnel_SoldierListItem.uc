@@ -21,25 +21,26 @@ simulated function InitListItem(StateObjectReference initUnitRef)
 {
 	local XComGameState_Unit Unit;
 	local string UnitLoc, status, statusTimeLabel, statusTimeValue, classIcon, rankIcon, flagIcon, mentalStatus;	
-	local int iRank, iTimeNum;
+	local int iTimeNum;
 	local X2SoldierClassTemplate SoldierClass;
-	local XComGameState_ResistanceFaction FactionState;
+	//local XComGameState_ResistanceFaction FactionState; //Issue #1134, not needed
 	local SoldierBond BondData;
 	local StateObjectReference BondmateRef;
 	local XComGameState_Unit Bondmate;
 	local int BondLevel; 
+	local StackedUIIconData StackedClassIcon; // Variable for issue #1134
+
+	local StackedUIIconData EmptyIconInfo; // Single variable for Issue #295
 	
 	Unit = XComGameState_Unit(`XCOMHISTORY.GetGameStateForObjectID(UnitRef.ObjectID));
-
-	iRank = Unit.GetRank();
-
+	
 	SoldierClass = Unit.GetSoldierClassTemplate();
-	FactionState = Unit.GetResistanceFaction();
+	//FactionState = Unit.GetResistanceFaction(); //Issue #1134, not needed
 
 	class'UIUtilities_Strategy'.static.GetPersonnelStatusSeparate(Unit, status, statusTimeLabel, statusTimeValue);
 	mentalStatus = "";
 
-	if(Unit.IsActive())
+	if(ShouldDisplayMentalStatus(Unit)) // Issue #651
 	{
 		Unit.GetMentalStateStringsSeparate(mentalStatus, statusTimeLabel, iTimeNum);
 		statusTimeLabel = class'UIUtilities_Text'.static.GetColoredText(statusTimeLabel, Unit.GetMentalStateUIState());
@@ -59,7 +60,7 @@ simulated function InitListItem(StateObjectReference initUnitRef)
 		statusTimeValue = "---";
 
 	flagIcon = Unit.GetCountryTemplate().FlagImage;
-	rankIcon = class'UIUtilities_Image'.static.GetRankIcon(iRank, SoldierClass.DataName);
+	rankIcon = Unit.GetSoldierRankIcon(); // Issue #408
 	// Start Issue #106
 	classIcon = Unit.GetSoldierClassIcon();
 	// End Issue #106
@@ -111,10 +112,10 @@ simulated function InitListItem(StateObjectReference initUnitRef)
 		BondLevel = -1; 
 	}
 
-	// Start Issue #106
+	// Start Issue #106, #408
 	AS_UpdateDataSoldier(Caps(Unit.GetName(eNameType_Full)),
 					Caps(Unit.GetName(eNameType_Nick)),
-					Caps(`GET_RANK_ABBRV(Unit.GetRank(), SoldierClass.DataName)),
+					Caps(Unit.GetSoldierShortRankName()),
 					rankIcon,
 					Caps(SoldierClass != None ? Unit.GetSoldierClassDisplayName() : ""),
 					classIcon,
@@ -127,10 +128,40 @@ simulated function InitListItem(StateObjectReference initUnitRef)
 					false, // psi soldiers can't rank up via missions
 					mentalStatus,
 					BondLevel);
-	// End Issue #106
+	// End Issue #106, #408
 
-	AS_SetFactionIcon(FactionState.GetFactionIcon());
+	//Issue #295 - Add a 'none' check before accessing FactionState --> Issue #1134 replaces this fix
+	// Start Issue #1134
+	StackedClassIcon = Unit.GetStackedClassIcon();
+	if (StackedClassIcon.Images.Length > 0)
+	{
+		AS_SetFactionIcon(StackedClassIcon);
+	}
+	else
+	{
+		// Preserve backwards compatibility in case AS_SetFactionIcon() is overridden via an MCO.
+		AS_SetFactionIcon(EmptyIconInfo);
+	}
+	// End Issue #1134
 }
+
+// Start issue #651
+simulated protected function bool ShouldDisplayMentalStatus (XComGameState_Unit Unit)
+{
+	local XComLWTuple Tuple;
+
+	Tuple = new class'XComLWTuple';
+	Tuple.Data.Add(2);
+	Tuple.Data[0].kind = XComLWTVBool;
+	Tuple.Data[0].b = Unit.IsActive();
+	Tuple.Data[1].kind = XComLWTVObject;
+	Tuple.Data[1].o = Unit;
+
+	`XEVENTMGR.TriggerEvent('SoldierListItem_ShouldDisplayMentalStatus', Tuple, self);
+
+	return Tuple.Data[0].b;
+}
+// End issue #651
 
 simulated function AS_UpdateDataSoldier(string UnitName,
 								 string UnitNickname, 

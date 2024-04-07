@@ -765,7 +765,9 @@ static function TypicalAbility_BuildVisualization(XComGameState VisualizeGameSta
 	VisualizationMgr = `XCOMVISUALIZATIONMGR;
 	Context = XComGameStateContext_Ability(VisualizeGameState.GetContext());
 	AbilityContext = Context.InputContext;
-	AbilityState = XComGameState_Ability(History.GetGameStateForObjectID(AbilityContext.AbilityRef.ObjectID));
+	/// HL-Docs: ref:Bugfixes; issue:879
+	/// Use HistoryIndex to access the AbilityState as it was when the ability was activated rather than getting the most recent version.
+	AbilityState = XComGameState_Ability(History.GetGameStateForObjectID(AbilityContext.AbilityRef.ObjectID,, VisualizeGameState.HistoryIndex));
 	AbilityTemplate = class'XComGameState_Ability'.static.GetMyTemplateManager().FindAbilityTemplate(AbilityContext.AbilityTemplateName);
 	ShootingUnitRef = Context.InputContext.SourceObject;
 
@@ -782,7 +784,9 @@ static function TypicalAbility_BuildVisualization(XComGameState VisualizeGameSta
 		SourceData.StateObject_NewState = SourceData.StateObject_OldState;
 	SourceData.VisualizeActor = ShooterVisualizer;	
 
-	SourceWeapon = XComGameState_Item(History.GetGameStateForObjectID(AbilityContext.ItemObject.ObjectID));
+	/// HL-Docs: ref:Bugfixes; issue:879
+	/// Use HistoryIndex to access the WeaponState as it was when the ability was activated rather than getting the most recent version.
+	SourceWeapon = XComGameState_Item(History.GetGameStateForObjectID(AbilityContext.ItemObject.ObjectID,, VisualizeGameState.HistoryIndex));
 	if (SourceWeapon != None)
 	{
 		WeaponTemplate = X2WeaponTemplate(SourceWeapon.GetMyTemplate());
@@ -1440,6 +1444,8 @@ simulated function SequentialShot_MergeVisualization(X2Action BuildTree, out X2A
 	VisMgr = `XCOMVISUALIZATIONMGR;
 	MarkerStart = X2Action_MarkerTreeInsertBegin(VisMgr.GetNodeOfType(BuildTree, class'X2Action_MarkerTreeInsertBegin'));
 	// Start Issue #20
+	/// HL-Docs: ref:Bugfixes; issue:20
+	/// Reaper's Banish now properly visualizes subsequent shots.
 	// This function breaks 3+ subsequent shots. Somehow, the actions filled out by GetNodesOfType are sorted so that our
 	// "get the last join marker" actually sometimes finds us the FIRST join marker. This causes all these shot contexts to
 	// try and visualize themselves alongside each other, which is definitely not intended.
@@ -1491,7 +1497,10 @@ simulated function SequentialShot_MergeVisualization(X2Action BuildTree, out X2A
 	ExitCoverAction = X2Action_ExitCover(VisMgr.GetNodeOfType(BuildTree, class'X2Action_ExitCover'));
 	ExitCoverAction.bSkipExitCoverVisualization = true;
 
-	VisMgr.ConnectAction(MarkerStart, VisualizationTree, true, JoinMarker);
+	// Single Line for Issue #273 Line moved to end so that there will only be one EnterCover is the VisualizationTree so the GetNodesOfType() can't get the wrong one
+	/// HL-Docs: ref:Bugfixes; issue:273
+	/// Fix an issue causing Rapid Fire/Chain Shot/Banish/... entering cover early
+	//VisMgr.ConnectAction(MarkerStart, VisualizationTree, true, JoinMarker);
 	
 	//	now we have to make sure there's a wait parented to the first exit cover, which waits for the last enter cover
 	//	this will prevent the idle state machine from taking over and putting the unit back in cover
@@ -1519,6 +1528,8 @@ simulated function SequentialShot_MergeVisualization(X2Action BuildTree, out X2A
 	}
 
 	WaitAction.ActionToWaitFor = LastEnterCoverAction;
+	// Single Line for Issue #273 Line moved from earlier
+	VisMgr.ConnectAction(MarkerStart, VisualizationTree, true, JoinMarker);
 }
 
 function OverwatchShot_BuildVisualization(XComGameState VisualizeGameState)

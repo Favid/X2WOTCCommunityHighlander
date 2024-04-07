@@ -118,6 +118,8 @@ static function XComGameState CreateStrategyGameStart(
 	{
 		History = `XCOMHISTORY;
 
+		History.ResetHistory( ); // clear out anything else that may have been in the history (shell save, ladders, challenges, whatever)
+
 		StrategyStartContext = XComGameStateContext_StrategyGameRule(class'XComGameStateContext_StrategyGameRule'.static.CreateXComGameStateContext());
 		StrategyStartContext.GameRuleType = eStrategyGameRule_StrategyGameStart;
 		StartState = History.CreateNewGameState(false, StrategyStartContext);
@@ -132,6 +134,13 @@ static function XComGameState CreateStrategyGameStart(
 		Seed = LocalGameEngine.GetARandomSeed();
 		LocalGameEngine.SetRandomSeeds(Seed);
 	}
+
+	// Start Issue #869
+	//
+	// Register campaign-start listeners after the start state has been created
+	// but before any campaign initialization has occurred.
+	class'X2EventListenerTemplateManager'.static.RegisterCampaignStartListeners();
+	// End Issue #869
 
 	//Create start time
 	class'XComGameState_GameTime'.static.CreateGameStartTime(StartState);
@@ -225,6 +234,13 @@ static function XComGameState CreateStrategyGameStart(
 			DLCInfos[i].InstallNewCampaign(StartState);
 		}
 	}
+
+	// Start Issue #971
+	//
+	// Clear out the campaign start listeners to ensure they don't hang around
+	// for longer than they're needed.
+	class'X2EventListenerTemplateManager'.static.UnRegisterAllListeners();
+	// End Issue #971
 
 	return StartState;
 }
@@ -325,6 +341,20 @@ static function CompleteStrategyFromTacticalTransfer()
 	local array<X2DownloadableContentInfo> DLCInfos;
 	local int i;
 	
+	// Start issue #785
+	/// HL-Docs: feature:PreCompleteStrategyFromTacticalTransfer; issue:785; tags:strategy
+	/// There are no events that trigger before the mission rewards and several
+	/// other critical functions are processed. This event gives a way for mods
+	/// to change several aspects in the transition from tactical to strategy.
+	///
+	/// ```event
+	/// EventID: PreCompleteStrategyFromTacticalTransfer,
+	/// EventData: None,
+	/// EventSource: None,
+	/// NewGameState: none,
+	/// ```
+	`XEVENTMGR.TriggerEvent('PreCompleteStrategyFromTacticalTransfer');
+
 	UpdateSkyranger();
 	CleanupProxyVips();
 	ProcessMissionResults();
@@ -1291,6 +1321,13 @@ static function CleanupProxyVips()
 			OriginalUnit.SetCurrentStat(eStat_HP, ProxyUnit.GetCurrentStat(eStat_HP));
 		}
 
+		// Start Issue #465
+		if (class'CHHelpers'.default.PreserveProxyUnitData && ProxyUnit.bRemovedFromPlay)
+		{
+			OriginalUnit.RemoveStateFromPlay();
+		}
+		// End Issue #465
+		
 		// remove the proxy from the game. We don't need it anymore
 		NewGameState.RemoveStateObject(ProxyUnit.ObjectID);
 	}
@@ -1479,7 +1516,13 @@ static function RemoveInvalidSoldiersFromSquad()
 						}
 					}
 
-					UnitState.MakeItemsAvailable(NewGameState, false, SlotsToClear);
+					// Start Issue #310
+					if (!class'CHHelpers'.default.bDontUnequipWhenWounded)
+					{
+						UnitState.MakeItemsAvailable(NewGameState, false, SlotsToClear);
+					}
+					// End Issue #310
+
 					UnitState.bIsShaken = false;
 				}
 			}

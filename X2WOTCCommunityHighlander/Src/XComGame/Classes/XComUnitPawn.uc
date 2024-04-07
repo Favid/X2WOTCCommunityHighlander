@@ -149,6 +149,11 @@ var private XComNarrativeMoment DialogNarrativeMoment;
 
 var transient bool bPhotoboothPawn;
 
+// Issue #641
+// This array is private as it is internal CHL logic and mods do not need to access it directly
+// If you have a use case for accessing this array, open a new issue
+var private array<Actor> AdvancedBodyPartActors;
+
 delegate AdditionalHitEffect( XComUnitPawn Pawn );
 
 event RigidBodyCollision( PrimitiveComponent HitComponent, PrimitiveComponent OtherComponent,
@@ -372,6 +377,83 @@ simulated function DamageTypeHitEffectContainer GetDamageTypeHitEffectContainer(
 	return DamageEffectContainer;
 }
 
+/// HL-Docs: feature:OverrideHitEffects; issue:825; tags:tactical
+/// Allows listeners to change behavior of `XComUnitPawn::PlayHitEffects()`.
+/// Listeners can set `OverrideHitEffect` to `true`, 
+/// and then the default behavior will be omitted entirely,
+/// and no hit effect will be played.
+///
+/// Alternatively, listeners can modify the parameters passed with the Tuple 
+/// to modify the default behavior.
+///
+/// For example, this listener can be used to prevent Templar purple hit effects
+/// from playing for any attack that has the hit result eHit_Parry, 
+/// eHit_Reflect or eHit_Deflect.
+///
+/// ```event
+/// EventID: OverrideHitEffects,
+/// EventData: [
+///     inout bool OverrideHitEffect,
+///     inout float Damage,
+///     in Actor InstigatedBy,
+///     inout vector HitLocation,
+///     inout name DamageTypeName,
+///     inout vector Momentum,
+///     inout bool bIsUnitRuptured,
+///     inout enum[EAbilityHitResult] HitResult,
+/// ],
+/// EventSource: XComUnitPawn (Pawn),
+/// NewGameState: none
+/// ```
+simulated private function bool TriggerOnOverrideHitEffects(
+	// Start Issue #1114 - make some of the function arguments 'out'.
+	out float Damage,
+	Actor InstigatedBy,
+	out vector HitLocation,
+	out name DamageTypeName,
+	out vector Momentum,
+	out int iIsUnitRuptured,
+	out EAbilityHitResult HitResult
+	// End Issue #1114
+)
+{
+	local XComLWTuple Tuple;
+
+	Tuple = new class'XComLWTuple';
+	Tuple.Id = 'OverrideHitEffects';
+	Tuple.Data.Add(8);
+	Tuple.Data[0].kind = XComLWTVBool;
+	Tuple.Data[0].b = false; // Override default hit effects
+	Tuple.Data[1].kind = XComLWTVFloat;
+	Tuple.Data[1].f = Damage;
+	Tuple.Data[2].kind = XComLWTVObject;
+	Tuple.Data[2].o = InstigatedBy;
+	Tuple.Data[3].kind = XComLWTVVector;
+	Tuple.Data[3].v = HitLocation;
+	Tuple.Data[4].kind = XComLWTVName;
+	Tuple.Data[4].n = DamageTypeName;
+	Tuple.Data[5].kind = XComLWTVVector;
+	Tuple.Data[5].v = Momentum;
+	Tuple.Data[6].kind = XComLWTVBool;
+	Tuple.Data[6].b = iIsUnitRuptured != 0;
+	Tuple.Data[7].kind = XComLWTVInt;
+	Tuple.Data[7].i = HitResult;
+
+	`XEVENTMGR.TriggerEvent('OverrideHitEffects', Tuple, self);
+
+	// Start Issue #1114 - update function arguments from Tuple.
+	Damage = Tuple.Data[1].f;
+	HitLocation = Tuple.Data[3].v;
+	DamageTypeName = Tuple.Data[4].n;
+	Momentum = Tuple.Data[5].v;
+	iIsUnitRuptured = Tuple.Data[6].b ? 1 : 0;
+	HitResult = EAbilityHitResult(Tuple.Data[7].i);
+	// End Issue #1114
+
+	return Tuple.Data[0].b;
+}
+
+
 simulated function PlayHitEffects(float Damage, Actor InstigatedBy, vector HitLocation, name DamageTypeName, vector Momentum, bool bIsUnitRuptured, EAbilityHitResult HitResult= eHit_Success, optional TraceHitInfo ThisHitInfo )
 {
 	local XComPawnHitEffect HitEffect;
@@ -380,6 +462,16 @@ simulated function PlayHitEffects(float Damage, Actor InstigatedBy, vector HitLo
 	local XComPerkContentShared kPerkContent;
 	local DamageTypeHitEffectContainer DamageContainer;
 	local XGUnit SourceUnit;
+	local int iIsUnitRuptured; // Variable for Issue #825
+
+	// Start Issue #825
+	iIsUnitRuptured = bIsUnitRuptured ? 1 : 0;
+	if (TriggerOnOverrideHitEffects(Damage, InstigatedBy, HitLocation, DamageTypeName, Momentum, iIsUnitRuptured, HitResult))
+	{
+		return;
+	}
+	bIsUnitRuptured = iIsUnitRuptured != 0;
+	// End Issue #825
 
 	// The HitNormal used to have noise applied, via "* 0.5 * VRand();", but S.Jameson requested 
 	// that it be removed, since he can add noise with finer control via the editor.  mdomowicz 2015_07_06
@@ -439,6 +531,68 @@ simulated function PlayHitEffects(float Damage, Actor InstigatedBy, vector HitLo
 	}
 }
 
+/// HL-Docs: feature:OverrideMetaHitEffect; issue:1116; tags:tactical
+/// Allows listeners to change the behavior of `XComUnitPawn::PlayMetaHitEffect()`.
+/// Meta Hit Effects are intended to communicate the overall effect of the attack,
+/// and include things like blood gushing out of the unit.
+///
+/// Listeners can set `OverrideMetaHitEffect` to `true`, 
+/// and then the default behavior will be omitted entirely,
+/// and no meta hit effect will be played.
+///
+/// Alternatively, listeners can modify the parameters passed with the Tuple 
+/// to modify the default behavior.
+///
+/// ```event
+/// EventID: OverrideMetaHitEffect,
+/// EventData: [
+///     inout bool OverrideMetaHitEffect,
+///     inout vector HitLocation,
+///     inout name DamageTypeName,
+///     inout vector Momentum,
+///     inout bool bIsUnitRuptured,
+///     inout enum[EAbilityHitResult] HitResult,
+/// ],
+/// EventSource: XComUnitPawn (Pawn),
+/// NewGameState: none
+/// ```
+simulated private function bool TriggerOnOverrideMetaHitEffect(
+	out vector HitLocation,
+	out name DamageTypeName,
+	out vector Momentum,
+	out int iUnitIsRuptured,
+	out EAbilityHitResult HitResult
+)
+{
+	local XComLWTuple Tuple;
+
+	Tuple = new class'XComLWTuple';
+	Tuple.Id = 'OverrideMetaHitEffect';
+	Tuple.Data.Add(6);
+	Tuple.Data[0].kind = XComLWTVBool;
+	Tuple.Data[0].b = false; // Override default hit effects
+	Tuple.Data[1].kind = XComLWTVVector;
+	Tuple.Data[1].v = HitLocation;
+	Tuple.Data[2].kind = XComLWTVName;
+	Tuple.Data[2].n = DamageTypeName;
+	Tuple.Data[3].kind = XComLWTVVector;
+	Tuple.Data[3].v = Momentum;
+	Tuple.Data[4].kind = XComLWTVBool;
+	Tuple.Data[4].b = iUnitIsRuptured != 0;
+	Tuple.Data[5].kind = XComLWTVInt;
+	Tuple.Data[5].i = HitResult;
+
+	`XEVENTMGR.TriggerEvent('OverrideMetaHitEffect', Tuple, self);
+
+	HitLocation = Tuple.Data[1].v;
+	DamageTypeName = Tuple.Data[2].n;
+	Momentum = Tuple.Data[3].v;
+	iUnitIsRuptured = Tuple.Data[4].b ? 1 : 0;
+	HitResult = EAbilityHitResult(Tuple.Data[5].i);
+
+	return Tuple.Data[0].b;
+}
+
 // The Meta Hit Effect is played once per shot (and NOT for every individual projectile), and
 // is useful for showing an "overall" effect of the shot.  mdomowicz 2015_04_30
 simulated function PlayMetaHitEffect(vector HitLocation, name DamageTypeName, vector Momentum, bool bIsUnitRuptured, EAbilityHitResult HitResult= eHit_Success, optional TraceHitInfo ThisHitInfo )
@@ -448,6 +602,16 @@ simulated function PlayMetaHitEffect(vector HitLocation, name DamageTypeName, ve
 	local vector HitNormal;
 	local DamageTypeHitEffectContainer DamageContainer;
 	local XComPerkContentShared kPerkContent;
+	local int iUnitIsRuptured; // Variable for Issue #1116
+
+	// Start Issue #1116
+	iUnitIsRuptured = bIsUnitRuptured ? 1 : 0;
+	if (TriggerOnOverrideMetaHitEffect(HitLocation, DamageTypeName, Momentum, iUnitIsRuptured, HitResult))
+	{
+		return;
+	}
+	bIsUnitRuptured = iUnitIsRuptured > 0;
+	// End Issue #1116
 
 	// The HitNormal used to have noise applied, via "* 0.5 * VRand();", but S.Jameson requested 
 	// that it be removed, since he can add noise with finer control via the editor.  mdomowicz 2015_07_06
@@ -902,7 +1066,7 @@ simulated function EndRagDoll()
 	//If the ragdoll state is ending, then we are presumably about to do something / play an anim. In many cases, this is but one of several flags checked to see if a unit is dead.
 	bPlayedDeath = false;
 
-	if (!IsInState(''))
+	if( !IsInState('') )
 		GotoState('');
 
 	if( m_bHasFullAnimWeightBones )
@@ -1273,6 +1437,35 @@ simulated state NoTicking
 simulated function GoToNextState() // Added to prevent none function on timer set in RagDollBlend
 {
 }
+
+simulated function SyncCorpse()
+{
+	local XComGameStateHistory History;
+	local XComGameState_Unit UnitState;
+	local bool bIsSoldier;
+	local XComGameStateContext_TacticalGameRule SyncCorpseContext;
+
+	// if we're doing latent submission, defer the state submission until the next frame where we're clear --Ned
+	if( `XCOMGAME.GameRuleset.IsDoingLatentSubmission() )
+	{
+		SetTimer(0.1f, false, 'SyncCorpse');
+		return;
+	}
+
+	History = `XCOMHISTORY;
+	UnitState = XComGameState_Unit(History.GetGameStateForObjectID(m_kGameUnit.ObjectID));
+	bIsSoldier = UnitState.IsSoldier();
+
+	if( (bIsSoldier || UnitState.CanBeCarried()) && !bProcessingDeathOnLoad )
+	{
+		//Normally not allowed to push game states from visual sequences like this, but we make an exception for xcom soldier bodies
+		SyncCorpseContext = XComGameStateContext_TacticalGameRule(class'XComGameStateContext_TacticalGameRule'.static.CreateXComGameStateContext());
+		SyncCorpseContext.GameRuleType = eGameRule_SyncTileLocationToCorpse;
+		SyncCorpseContext.UnitRef = UnitState.GetReference();
+		`XCOMGAME.GameRuleset.SubmitGameStateContext(SyncCorpseContext);
+	}
+}
+
 simulated state RagDollBlend
 {
 	simulated event BeginState(name PreviousStateName)
@@ -1312,11 +1505,7 @@ simulated state RagDollBlend
 	{
 		local XComWorldData WorldData;
 		local TTile kTile;
-		local CustomAnimParams AnimParams;
-		local XComGameStateHistory History;
-		local bool bIsSoldier;
-		local XComGameStateContext_TacticalGameRule SyncCorpseContext;
-		local XComGameState_Unit UnitState;				
+		local CustomAnimParams AnimParams;					
 		
 		// Start Issue #41
 		// Guard clause, early return and finish ragdoll if ragdoll collision
@@ -1339,17 +1528,7 @@ simulated state RagDollBlend
 				
 		Mesh.PutRigidBodyToSleep();
 
-		History = `XCOMHISTORY;
-		UnitState = XComGameState_Unit(History.GetGameStateForObjectID(m_kGameUnit.ObjectID));
-		bIsSoldier = UnitState.IsSoldier();
-		if ((bIsSoldier || UnitState.CanBeCarried()) && !bProcessingDeathOnLoad)
-		{
-			//Normally not allowed to push game states from visual sequences like this, but we make an exception for xcom soldier bodies
-			SyncCorpseContext = XComGameStateContext_TacticalGameRule(class'XComGameStateContext_TacticalGameRule'.static.CreateXComGameStateContext());
-			SyncCorpseContext.GameRuleType = eGameRule_SyncTileLocationToCorpse;
-			SyncCorpseContext.UnitRef = UnitState.GetReference();
-			`XCOMGAME.GameRuleset.SubmitGameStateContext(SyncCorpseContext);
-		}
+		SyncCorpse();
 
 		//Must take place before we possible turn off the physics below
 		Mesh.bSyncActorLocationToRootRigidBody = true;
@@ -1619,8 +1798,34 @@ function CreateBodyPartAttachment(XComBodyPartContent BodyPartContent)
 	local SkeletalMeshComponent SkelMeshComp;
 	local XComPawnPhysicsProp PhysicsProp;
 
+	// Variables for issue #641
+	local XComBodyPartContentAdvanced AdvancedContent;
+	local Actor Archetype, Instance;
+	local Vector SocketLocation;
+	local Rotator SocketRotation;
+
 	if (BodyPartContent == none)
 		return;
+
+	// Start issue #641
+	AdvancedContent = XComBodyPartContentAdvanced(BodyPartContent);
+	if (AdvancedContent != none)
+	{
+		foreach AdvancedContent.Archetypes(Archetype)
+		{
+		    Mesh.GetSocketWorldLocationAndRotation(BodyPartContent.SocketName, SocketLocation, SocketRotation);
+			Instance = Spawn(Archetype.Class,,, SocketLocation, SocketRotation, Archetype);
+
+			if (Instance != None)
+			{
+				Instance.SetBase(self,, Mesh, BodyPartContent.SocketName);
+				AdvancedBodyPartActors.AddItem(Instance);
+			}
+		}
+
+		return;
+	}
+	// End issue #641
 
 	if( BodyPartContent.SocketName != '' && Mesh.GetSocketByName(BodyPartContent.SocketName) != none )
 	{
@@ -1673,6 +1878,30 @@ function RemoveBodyPartAttachment(XComBodyPartContent BodyPartContent)
 {
 	local int AttachmentIndex;
 	local SkeletalMeshComponent AttachedMesh;
+
+	// Variables for issue #641
+	local XComBodyPartContentAdvanced AdvancedContent;
+	local Actor AttachedActor, Archetype;
+	
+	// Start issue #641
+	AdvancedContent = XComBodyPartContentAdvanced(BodyPartContent);
+	if (AdvancedContent != none)
+	{
+		foreach AdvancedBodyPartActors(AttachedActor)
+		{
+			foreach AdvancedContent.Archetypes(Archetype)
+			{
+				if (AttachedActor.ObjectArchetype == Archetype)
+				{
+					AdvancedBodyPartActors.RemoveItem(AttachedActor);
+					AttachedActor.Destroy();
+				}
+			}
+		}
+
+		return;
+	}
+	// End issue #641
 
 	if( BodyPartContent.SkeletalMesh != None )
 	{
@@ -1759,7 +1988,29 @@ simulated function ResetIKTranslations()
 simulated event Destroyed ()
 {
 	super.Destroyed();
+
+	DestroyAdvancedBodyPartActors(); // Issue #641
 }
+
+// Start issue #641
+simulated private function DestroyAdvancedBodyPartActors ()
+{
+	local Actor Actor;
+
+	// We do not need to worry about iterator invalidation here as no callbacks/events in Actor.Destroy() chain
+	// affect the AdvancedBodyPartActors array. However, if one is to be added, then this code needs to be checked
+	// for potential iterator invalidation issues
+	foreach AdvancedBodyPartActors(Actor)
+	{
+		if (Actor != none)
+		{
+			Actor.Destroy();
+		}
+	}
+
+	AdvancedBodyPartActors.Length = 0;
+}
+// End issue #641
 
 simulated function int GetCurrentFloor()
 {
@@ -1855,6 +2106,8 @@ simulated function EquipWeapon( XComWeapon kWeapon, bool bImmediate, bool bIsRea
 	local XComGameStateHistory History;
 	local X2WeaponTemplate WeaponTemplate;
 	local int Idx;
+	// Single variable for Issue #921
+	local float fOverrideWeaponScale;
 
 	// Jerad@Psyonix, do some stuff that InventoryManager.CreateInventory does...
 	if (kWeapon != None)
@@ -1886,6 +2139,13 @@ simulated function EquipWeapon( XComWeapon kWeapon, bool bImmediate, bool bIsRea
 			WeaponTemplate = X2WeaponTemplate(Item.GetMyTemplate());
 			if( bIsFemale && !IsA('XComMECPawn') && (WeaponTemplate == none || !WeaponTemplate.bUseArmorAppearance))
 				kWeapon.Mesh.SetScale(WeaponScale);
+
+			// Start Issue #921
+			if (TriggerOverrideWeaponScale(fOverrideWeaponScale, Item))
+			{
+				kWeapon.Mesh.SetScale(fOverrideWeaponScale);
+			}
+			// End Issue #921
 
 			Mesh.AttachComponentToSocket(kWeapon.Mesh, kWeapon.DefaultSocket);
 			kWeapon.Mesh.CastShadow = true;
@@ -1922,6 +2182,43 @@ simulated function EquipWeapon( XComWeapon kWeapon, bool bImmediate, bool bIsRea
 
 	MarkAuxParametersAsDirty(m_bAuxParamNeedsPrimary, m_bAuxParamNeedsSecondary, m_bAuxParamUse3POutline);
 }
+// Start Issue #921
+/// HL-Docs: feature:OverrideWeaponScale; issue:921; tags:pawns
+/// The `OverrideWeaponScale` event allows mods to rescale weapons for unit pawns. 
+/// 
+/// This event is triggered from two places: 
+/// 1) `XComUnitPawn::EquipWeapon()` is used by items in weapon slots, as well as for utility items
+/// that use the [Display Multi Slot Items](../misc/DisplayMultiSlotItems.md) functionality. 
+/// 2) `XComUnitPawn::AttachItem()` is used for utility items by default. In this case,
+/// the `ItemState` component of the Tuple will be `none`. 
+///
+/// ```event
+/// EventID: OverrideWeaponScale,
+/// EventData: [out bool bOverride, inout float fOverrideWeaponScale, in XComGameState_Item ItemState],
+/// EventSource: XComUnitPawn (UnitPawn),
+/// NewGameState: none
+/// ```
+private function bool TriggerOverrideWeaponScale(out float fOverrideWeaponScale, optional XComGameState_Item Item)
+{
+	local XComLWTuple OverrideTuple;
+
+	OverrideTuple = new class'XComLWTuple';
+	OverrideTuple.Id = 'OverrideWeaponScale';
+	OverrideTuple.Data.Add(3);
+	OverrideTuple.Data[0].kind = XComLWTVBool;
+	OverrideTuple.Data[0].b = false;  
+	OverrideTuple.Data[1].kind = XComLWTVFloat;
+	OverrideTuple.Data[1].f = fOverrideWeaponScale; 
+	OverrideTuple.Data[2].kind = XComLWTVObject;
+	OverrideTuple.Data[2].o = Item; 
+
+	`XEVENTMGR.TriggerEvent('OverrideWeaponScale', OverrideTuple, self);
+
+	fOverrideWeaponScale = OverrideTuple.Data[1].f;
+
+	return OverrideTuple.Data[0].b;
+}
+// End Issue #921
 
 // This function creates and attaches the meshes needed for a soldier's loadout in a non-gamestate altering way.
 // It is ONLY intended for representative purposes, such as the UI, throwaway matinee pawns, etc. Do not use it 
@@ -1934,6 +2231,9 @@ simulated function CreateVisualInventoryAttachments(UIPawnMgr PawnMgr, XComGameS
 	local array<CHItemSlot> SlotTemplates;
 	local CHItemSlot SlotIter;
 	local EInventorySlot Slot;
+
+	// Variable for Issue #885
+	local array<EInventorySlot> ValidMultiSlots;
 
 	PhotoboothAnimSets.Length = 0;
 
@@ -1952,9 +2252,17 @@ simulated function CreateVisualInventoryAttachments(UIPawnMgr PawnMgr, XComGameS
 	SlotTemplates = class'CHItemSlot'.static.GetAllSlotTemplates();
 	foreach SlotTemplates(SlotIter)
 	{
-		if (!SlotIter.IsMultiItemSlot && SlotIter.ShowOnCinematicPawns)
+		if (SlotIter.ShowOnCinematicPawns)
 		{
-			ValidSlots.AddItem(SlotIter.InvSlot);
+			// Start Issue #885
+			if (SlotIter.IsMultiItemSlot)
+			{
+				ValidMultiSlots.AddItem(SlotIter.InvSlot);
+			} // End Issue #885
+			else
+			{
+				ValidSlots.AddItem(SlotIter.InvSlot);
+			}
 		}
 	}
 
@@ -1963,6 +2271,11 @@ simulated function CreateVisualInventoryAttachments(UIPawnMgr PawnMgr, XComGameS
 		CreateVisualInventoryAttachment(PawnMgr, Slot, UnitState, CheckGameState, bSetAsVisualizer, OffsetCosmeticPawn, bUsePhotoboothPawns, PhotoboothAnimSets, bArmorAppearanceOnly);
 	}
 	// Issue #118 End
+
+	// Issue #885 Start
+	ValidMultiSlots.AddItem(eInvSlot_Utility);
+	CreateVisualInventoryAttachmentsForMultiSlotItems(PawnMgr, UnitState, ValidMultiSlots, CheckGameState, bSetAsVisualizer, OffsetCosmeticPawn, bUsePhotoboothPawns, PhotoboothAnimSets, bArmorAppearanceOnly);
+	// Issue #885 End
 
 	if (bUsePhotoboothPawns)
 	{
@@ -1973,7 +2286,7 @@ simulated function CreateVisualInventoryAttachments(UIPawnMgr PawnMgr, XComGameS
 simulated function SpawnCosmeticUnitPawn(UIPawnMgr PawnMgr, EInventorySlot InvSlot, string CosmeticUnitTemplate, XComGameState_Unit OwningUnit, bool OffsetForArmory, bool bUsePhotoboothPawns = false)
 {
 	local X2CharacterTemplate EquipCharacterTemplate;
-	local XComUnitPawn ArchetypePawn, CosmeticPawn;	
+	local XComUnitPawn ArchetypePawn, CosmeticPawn;
 	local string ArchetypeStr;
 	local Vector PawnLoc;
 	local TAppearance UseAppearance;
@@ -1995,9 +2308,20 @@ simulated function SpawnCosmeticUnitPawn(UIPawnMgr PawnMgr, EInventorySlot InvSl
 		return;
 	}
 
+	// Start Issue #380: Moved earlier because we want to SetAppearance() whether we create a new pawn or not
+	UseAppearance = OwningUnit.kAppearance;
+	UseAppearance.iArmorTint = UseAppearance.iWeaponTint;
+	UseAppearance.iArmorTintSecondary = UseAppearance.iArmorTintSecondary;
+	UseAppearance.nmPatterns = UseAppearance.nmWeaponPattern;
+	// End Issue #380
 	CosmeticPawn = PawnMgr.GetCosmeticArchetypePawn(InvSlot, OwningUnit.ObjectID, bUsePhotoboothPawns);
 	if (CosmeticPawn != none && CosmeticPawn == ArchetypePawn)
+	// Start Issue #380
+	{
+		CosmeticPawn.SetAppearance(UseAppearance, true);
 		return;
+	}
+	//End Issue #380
 
 	PawnLoc = Location;
 	OwnersUnitState = XComGameState_Unit(`XCOMHISTORY.GetGameStateForObjectID(ObjectID));
@@ -2013,11 +2337,6 @@ simulated function SpawnCosmeticUnitPawn(UIPawnMgr PawnMgr, EInventorySlot InvSl
 	}
 	
 	CosmeticPawn = PawnMgr.AssociateCosmeticPawn(InvSlot, ArchetypePawn, OwningUnit.ObjectID, self, PawnLoc, Rotation, bUsePhotoboothPawns);
-
-	UseAppearance = OwningUnit.kAppearance;
-	UseAppearance.iArmorTint = UseAppearance.iWeaponTint;
-	UseAppearance.iArmorTintSecondary = UseAppearance.iArmorTintSecondary;	
-	UseAppearance.nmPatterns = UseAppearance.nmWeaponPattern;
 
 	CosmeticPawn.SetAppearance(UseAppearance, true);
 	CosmeticPawn.HQIdleAnim  = EquipCharacterTemplate.HQIdleAnim;
@@ -2165,7 +2484,7 @@ simulated function CreateVisualInventoryAttachment(UIPawnMgr PawnMgr, EInventory
 	local XComGameState_Item ItemState;
 	local X2EquipmentTemplate EquipmentTemplate;
 	local X2WeaponTemplate WeaponTemplate;
-	local bool bRegularItem;	
+	local bool bRegularItem;
 	local XComWeapon CurrentWeapon;
 	local int i;
 
@@ -2241,6 +2560,107 @@ simulated function CreateVisualInventoryAttachment(UIPawnMgr PawnMgr, EInventory
 	}
 }
 
+// Issue #885 Start
+// Generally behaves in the same way as CreateVisualInventoryAttachment(), but it cycles through all items in all multi slots, 
+// and runs ShouldDisplayMultiSlotItemInStrategy callbacks for each to make the individual decision whether the item should be displayed on the unit.
+simulated private function CreateVisualInventoryAttachmentsForMultiSlotItems(UIPawnMgr PawnMgr, XComGameState_Unit UnitState, array<EInventorySlot> ValidMultiSlots, XComGameState CheckGameState, bool bSetAsVisualizer, bool OffsetCosmeticPawn, bool bUsePhotoboothPawns = false, optional out array<AnimSet> PhotoboothAnimSets, bool bArmorAppearanceOnly = false)
+{
+	local XGWeapon kWeapon;
+	local XComGameState_Item ItemState;
+	local array<XComGameState_Item> ItemStates;
+	local X2EquipmentTemplate EquipmentTemplate;
+	local X2WeaponTemplate WeaponTemplate;
+	local XComWeapon CurrentWeapon;
+	local int i, MultiSlotIndex;
+	local CHHelpers CHHelpersObj;
+	local EInventorySlot ValidMultiSlot;
+
+	CHHelpersObj = class'CHHelpers'.static.GetCDO();
+	if (CHHelpersObj == none || PawnMgr == none)
+	{
+		return;
+	}
+
+	foreach ValidMultiSlots(ValidMultiSlot)
+	{	
+		// The MultiSlotIndex is used to track the position of the item in the Multi Slot.
+		// It will be used make sure that each item has its own visualizer slot in the soldier's PawnInfo, so that if this item is replaced by another item, 
+		// the visualizer of the original item gets properly removed from the soldier's pawn.
+		MultiSlotIndex = -1;
+		ItemStates = UnitState.GetAllItemsInSlot(ValidMultiSlot, CheckGameState);
+
+		foreach ItemStates(ItemState)
+		{
+			// Increment index for each item in this Multi Slot.
+			MultiSlotIndex++;
+
+			if (!CHHelpersObj.ShouldDisplayMultiSlotItemInStrategy(UnitState, ItemState, ValidMultiSlot, self, CheckGameState))
+			{
+				continue;
+			}
+
+			if(bArmorAppearanceOnly)
+			{
+				WeaponTemplate = X2WeaponTemplate(ItemState.GetMyTemplate());
+				if(WeaponTemplate == none || WeaponTemplate.bUseArmorAppearance == false)
+				{
+					continue;
+				}
+			}
+		
+			EquipmentTemplate = X2EquipmentTemplate(ItemState.GetMyTemplate());
+			//Is this a cosmetic unit item?
+			if(EquipmentTemplate == none || EquipmentTemplate.CosmeticUnitTemplate == "")
+			{
+				kWeapon = XGWeapon(class'XGItem'.static.CreateVisualizer(ItemState, bSetAsVisualizer, self));
+
+				if(kWeapon == none)
+				{
+					continue;
+				}
+
+				if(kWeapon.m_kOwner != none)
+				{
+					kWeapon.m_kOwner.GetInventory().PresRemoveItem(kWeapon);
+				}
+
+				PawnMgr.AssociateMultiSlotWeaponPawn(MultiSlotIndex, ItemState.GetVisualizer(), UnitState.GetReference().ObjectID, self, ValidMultiSlot, bUsePhotoboothPawns);
+				kWeapon.UnitPawn = self;
+				kWeapon.m_eSlot = X2WeaponTemplate(ItemState.GetMyTemplate()).StowedLocation; // right hand slot is for Primary weapons
+				EquipWeapon(kWeapon.GetEntity(), true, false);
+					
+				if (bUsePhotoboothPawns)
+				{
+					CurrentWeapon = kWeapon.GetEntity();
+					if (CurrentWeapon == none)
+					{
+						continue;
+					}
+					// Add the weapon's animsets
+					for (i = 0; i < CurrentWeapon.CustomUnitPawnAnimsets.Length; ++i)
+					{
+						PhotoboothAnimSets.AddItem(CurrentWeapon.CustomUnitPawnAnimsets[i]);
+					}
+
+					if (UnitState.kAppearance.iGender == eGender_Female)
+					{
+						for (i = 0; i < CurrentWeapon.CustomUnitPawnAnimsetsFemale.Length; ++i)
+						{
+							PhotoboothAnimSets.AddItem(CurrentWeapon.CustomUnitPawnAnimsetsFemale[i]);
+						}
+					}
+				}
+			}
+			else 
+			{
+				// This is a cosmetic unit item, e.g. Gremlin. Currently there's a limitation that only cosmetic unit can be visible per inventory slot.
+				SpawnCosmeticUnitPawn(PawnMgr, ValidMultiSlot, EquipmentTemplate.CosmeticUnitTemplate, UnitState, OffsetCosmeticPawn, bUsePhotoboothPawns);
+			}
+		}   
+	}
+}
+// Issue #885 End
+
 // MHU - This function is used to move the weapon or item to a new socket on the unit WITHOUT
 //       equipping it. For example, applying the initial loadout or debugging when we don't have
 //       a valid item attach notifies (infinite grenades).
@@ -2249,6 +2669,9 @@ simulated function AttachItem(Actor a, name SocketName, bool bIsRearBackPackItem
 	local MeshComponent MeshComp;
 	local bool bHideItem;
 	local int i;
+
+	// Single variable for Issue #921
+	local float fOverrideWeaponScale;
 
 	// MHU - Is there already a foundMeshComponent? If so, then the weapon was already added to the unit
 	//       and we're now moving it to a different socketName.
@@ -2264,6 +2687,14 @@ simulated function AttachItem(Actor a, name SocketName, bool bIsRearBackPackItem
 			// For non-MEC females, all weapons are scaled to 75% -- jboswell
 			if (bIsFemale && !IsA('XComMECPawn'))
 				MeshComp.SetScale(WeaponScale);
+
+			// Start Issue #921
+			if (TriggerOverrideWeaponScale(fOverrideWeaponScale))
+			{
+				MeshComp.SetScale(fOverrideWeaponScale);
+			}
+			// End Issue #921
+
 			// `log("Pawn::AddItem:" @ MeshComp @ SocketName);
 			Mesh.AttachComponentToSocket(MeshComp, SocketName);
 

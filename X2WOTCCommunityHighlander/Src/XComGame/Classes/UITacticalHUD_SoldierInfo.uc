@@ -16,6 +16,9 @@ var string FocusToolTipTargetPath;
 var UIBondIcon BondIcon;
 var int LastVisibleActiveUnitID;
 
+// Issue #257
+var UIImage IconImage;
+
 // Pseudo-Ctor
 simulated function UITacticalHUD_SoldierInfo InitStatsContainer()
 {
@@ -41,6 +44,13 @@ simulated function OnInit()
 	BondIconPanel = Spawn(class'UIPanel', self).InitPanel('bondIconMC');
 	BondIcon = Spawn(class'UIBondIcon', BondIconPanel).InitBondIcon('bondIconMC');
 	BondIcon.ProcessMouseEvents();
+
+	// Start Issue #257
+	IconImage = Spawn(class'UIImage', self).InitImage();
+	IconImage.OriginCenter();
+	IconImage.SetPosition(49, -126);
+	IconImage.Hide();
+	// End Issue #257
 }
 
 simulated function OnMouseEvent(int cmd, array<string> args)
@@ -100,7 +110,7 @@ simulated function UpdateStats()
 	else
 	{
 		//UITacticalHUD(Screen).m_kInventory.m_kBackpack.Update( kActiveUnit );
-		if( LastVisibleActiveUnitID != kActiveUnit.ObjectID )
+		if( /*LastVisibleActiveUnitID != kActiveUnit.ObjectID*/ true ) // Issue #257, this is also called when refreshing after action
 		{
 			SetStats(kActiveUnit);
 			SetHackingInfo(kActiveUnit);
@@ -120,7 +130,7 @@ simulated function UpdateStats()
 simulated function UpdateFocusLevelVisibility(XGUnit ActiveUnit)
 {
 	local XComGameState_Unit UnitState;
-	local XComGameState_Effect_TemplarFocus FocusState;
+	local XComLWTuple Tup; // Issue #257
 	local XComGameState_Ability AbilityState;
 	
 	Movie.Pres.m_kTooltipMgr.RemoveTooltipsByPartialPath(FocusToolTipTargetPath);
@@ -130,19 +140,31 @@ simulated function UpdateFocusLevelVisibility(XGUnit ActiveUnit)
 	UnitState = XComGameState_Unit(`XCOMHISTORY.GetGameStateForObjectID(ActiveUnit.ObjectID));
 	if( UnitState != None )
 	{
-		FocusState = UnitState.GetTemplarFocusEffectState();
-		if( FocusState != None )
+		// Start Issue #257
+		Tup = class'CHHelpers'.static.GetFocusTuple(UnitState);
+		if (Tup.Data[0].b)
 		{
 			ShowFocusLevel();
-			SetFocusLevel( ActiveUnit, FocusState.FocusLevel, FocusState.GetMaxFocus(UnitState), AbilityState != none? AbilityState.GetFocusCost(UnitState) : 0);
-			Movie.Pres.m_kTooltipMgr.AddNewTooltipTextBox(`XEXPAND.ExpandString(FocusLevelDescriptions[FocusState.FocusLevel]),
+			// SetFocusLevel runs "async", while AS_SetMCColor runs sync. However, we should be initialized here already
+			AS_SetMCColor(MCPath$".FocusLevel.theMeter", Tup.Data[3].s);
+			if (Tup.Data[4].s != "")
+			{
+				IconImage.LoadImage(Tup.Data[4].s);
+			}
+			else
+			{
+				IconImage.Hide();
+			}
+			SetFocusLevel( ActiveUnit, Tup.Data[1].i, Tup.Data[2].i, AbilityState != none? AbilityState.GetFocusCost(UnitState) : 0, "<font color=\"" $ Repl(Tup.Data[3].s, "0x", "#") $ "\">" $ Tup.Data[6].s $ "</font>");
+			Movie.Pres.m_kTooltipMgr.AddNewTooltipTextBox(Tup.Data[5].s,
 															0,
 															0,
 															FocusToolTipTargetPath,
-															FocusLevelLabel @ FocusState.FocusLevel,
+															Tup.Data[6].s @ Tup.Data[1].i,
 															,
 															,
 															true);
+		// End Issue #257
 
 			return;
 		}
@@ -151,10 +173,11 @@ simulated function UpdateFocusLevelVisibility(XGUnit ActiveUnit)
 	HideFocusLevel();
 }
 
-simulated function SetFocusLevel(XGUnit ActiveUnit, int FocusLevel, int MaxFocus, optional int preview = 0)
+// Issue #257, additional parameter
+simulated function SetFocusLevel(XGUnit ActiveUnit, int FocusLevel, int MaxFocus, optional int preview = 0, optional string Label = default.FocusLevelLabel)
 {
 	MC.BeginFunctionOp("SetFocusLevelLabel");
-	MC.QueueString(default.FocusLevelLabel);
+	MC.QueueString(Label);
 	MC.EndOp();
 
 	MC.BeginFunctionOp("SetFocusLevel");
@@ -166,34 +189,38 @@ simulated function SetFocusLevel(XGUnit ActiveUnit, int FocusLevel, int MaxFocus
 
 simulated function HideFocusLevel()
 {
+	IconImage.Hide(); // Issue #257
 	MC.BeginFunctionOp("HideFocusLevel");
 	MC.EndOp();
 }
 
 simulated function ShowFocusLevel()
 {
+	IconImage.Show(); // Issue #257
 	MC.BeginFunctionOp("ShowFocusLevel");
 	MC.EndOp();
 }
 
 simulated function PreviewFocusLevel(XComGameState_Unit UnitState, int Preview)
 {
-	local XComGameState_Effect_TemplarFocus FocusState;
+	// Start Issue #257
+	local XComLWTuple Tup;
 
 	if (UnitState != none)
-		FocusState = UnitState.GetTemplarFocusEffectState();
+		Tup = class'CHHelpers'.static.GetFocusTuple(UnitState);
 
-	if (UnitState == none || FocusState == none)
+	if (UnitState == none || !Tup.Data[0].b)
 	{
 		HideFocusLevel();
 		return;
 	}
 
 	MC.BeginFunctionOp("SetFocusLevel");
-	MC.QueueNumber(FocusState.FocusLevel);
-	MC.QueueNumber(FocusState.GetMaxFocus(UnitState));
+	MC.QueueNumber(Tup.Data[1].i);
+	MC.QueueNumber(Tup.Data[2].i);
 	MC.QueueNumber(Preview);
 	MC.EndOp();
+	// End Issue #257
 }
 
 simulated function SetStats( XGUnit kActiveUnit )
@@ -204,14 +231,15 @@ simulated function SetStats( XGUnit kActiveUnit )
 	local float aimPercent;
 	local array<UISummary_UnitEffect> BonusEffects, PenaltyEffects; 
 	local X2SoldierClassTemplateManager SoldierTemplateManager;
-	local XComGameState_ResistanceFaction FactionState;
+	//local XComGameState_ResistanceFaction FactionState; //Issue #1134, not needed
 	local StateObjectReference BondmateRef;
 	local SoldierBond BondInfo;
 	local XComGameState_HeadquartersXCom XComHQ;
+	local StackedUIIconData StackedClassIcon; // Variable for issue #1134
 
 	StateUnit = XComGameState_Unit(`XCOMHISTORY.GetGameStateForObjectID(kActiveUnit.ObjectID));
-
-	FactionState = StateUnit.GetResistanceFaction();
+	
+	//FactionState = StateUnit.GetResistanceFaction(); //Issue #1134, not needed
 
 	if( StateUnit.GetMyTemplateName() == 'AdvPsiWitchM2' )
 	{
@@ -229,7 +257,7 @@ simulated function SetStats( XGUnit kActiveUnit )
 
 		if( StateUnit.IsSoldier() )
 		{
-			charRank = class'UIUtilities_Image'.static.GetRankIcon(StateUnit.GetRank(), StateUnit.GetSoldierClassTemplateName());
+			charRank = StateUnit.GetSoldierRankIcon(); // Issue #408
 			// Start Issue #106
 			charClass = StateUnit.GetSoldierClassIcon();
 			// End Issue #106
@@ -260,7 +288,11 @@ simulated function SetStats( XGUnit kActiveUnit )
 	showPenalty = (PenaltyEffects.length > 0);
 
 	AS_SetStats(charName, charNickname, charRank, charClass, isLeader, isLeveledUp, aimPercent, showBonus, showPenalty);
-	if (FactionState != none) AS_SetFactionIcon(FactionState.GetFactionIcon());
+	// Start Issue #1134
+	StackedClassIcon = StateUnit.GetStackedClassIcon();
+	if (StackedClassIcon.Images.Length > 0)
+		AS_SetFactionIcon(StackedClassIcon);
+	// End Issue #1134
 
 	if( StateUnit.HasSoldierBond(BondmateRef, BondInfo) )
 	{

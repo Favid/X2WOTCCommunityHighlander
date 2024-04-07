@@ -364,7 +364,7 @@ simulated function PopulateData()
 	}
 
 	previewIndex = -1;
-	maxRank = class'X2ExperienceConfig'.static.GetMaxRank();
+	maxRank = ClassTemplate.GetMaxConfiguredRank(); // Issue #1
 	AbilityTemplateManager = class'X2AbilityTemplateManager'.static.GetAbilityTemplateManager();
 
 	if(ClassRowItem == none)
@@ -379,7 +379,9 @@ simulated function PopulateData()
 	}
 
 	ClassRowItem.ClassName = ClassTemplate.DataName;
-	ClassRowItem.SetRankData(class'UIUtilities_Image'.static.GetRankIcon(1, ClassTemplate.DataName), Caps(class'X2ExperienceConfig'.static.GetRankName(1, ClassTemplate.DataName)));
+	// Start Issue #408
+	ClassRowItem.SetRankData(Unit.GetSoldierRankIcon(1), Caps(Unit.GetSoldierRankName(1)));
+	// End Issue #408
 
 	AbilityTree = Unit.GetRankAbilities(ClassRowItem.Rank);
 	AbilityTemplate2 = AbilityTemplateManager.FindAbilityTemplate(AbilityTree[0].AbilityName);
@@ -403,7 +405,7 @@ simulated function PopulateData()
 	ClassRowItem.SetClassData(Unit.GetSoldierClassIcon(), Caps(Unit.GetSoldierClassDisplayName()));
 	// End Issue #106
 
-	for(i = 2; i < maxRank; ++i)
+	for(i = 2; i <= maxRank; ++i) // Issue #1 -- new maxRank needs to be included
 	{
 		Item = UIArmory_PromotionItem(List.GetItem(i - 2));
 		if(Item == none)
@@ -411,7 +413,9 @@ simulated function PopulateData()
 
 		Item.Rank = i - 1;
 		Item.ClassName = ClassTemplate.DataName;
-		Item.SetRankData(class'UIUtilities_Image'.static.GetRankIcon(i, ClassTemplate.DataName), Caps(class'X2ExperienceConfig'.static.GetRankName(i, ClassTemplate.DataName)));
+		// Start Issue #408
+		Item.SetRankData(Unit.GetSoldierRankIcon(i), Caps(Unit.GetSoldierRankName(i)));
+		// End Issue #408
 
 		AbilityTree = Unit.GetRankAbilities(Item.Rank);
 

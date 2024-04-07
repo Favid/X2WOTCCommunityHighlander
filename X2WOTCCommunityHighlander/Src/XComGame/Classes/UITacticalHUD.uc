@@ -522,7 +522,7 @@ simulated function UpdateSkyrangerButton()
 		AbilityState = XComGameState_Ability(`XCOMHISTORY.GetGameStateForObjectID(m_kAbilityHUD.m_arrAbilities[i].AbilityObjectRef.ObjectID));
 		AbilityTemplate = AbilityState.GetMyTemplate();
 
-		if (AbilityTemplate.DataName == 'PlaceEvacZone')
+		if (AbilityTemplate.DataName == class'CHHelpers'.static.GetPlaceEvacZoneAbilityName())  // Issue #855
 		{
 			bButtonVisible = AvailableActionInfo.AvailableCode == 'AA_Success' &&
 				(!`REPLAY.bInTutorial || `TUTORIAL.IsNextAbility(AbilityTemplate.DataName));
@@ -568,7 +568,16 @@ simulated function TargetHighestHitChanceEnemy()
 	}
 
 	m_kAbilityHUD.GetTargetingMethod().DirectSetTarget(HighestHitChanceIndex);
-	TargetEnemy(Targets[HighestHitChanceIndex].PrimaryTarget.ObjectID);
+	
+	// Issue #295 - Make sure there's at least one member in the Targets array before accessing it.
+	if (Targets.Length > 0)
+	{
+		TargetEnemy(Targets[HighestHitChanceIndex].PrimaryTarget.ObjectID);
+	}
+	else
+	{
+		TargetEnemy();
+	}
 }
 
 simulated function OnChosenHUDEvent(UIPanel ChildControl, int cmd)
@@ -1788,7 +1797,7 @@ simulated function RefreshSitRep()
 				}
 
 				SitRepLines.AddItem( class'UIUtilities_Text'.static.GetColoredText(SitRepTemplate.GetFriendlyName(), eState));
-				SitRepTooltipLines.AddItem(SitRepTemplate.Description);
+				SitRepTooltipLines.AddItem(SitRepTemplate.GetDescriptionExpanded()); // Issue #566
 			}
 		}
 	}

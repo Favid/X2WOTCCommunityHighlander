@@ -110,16 +110,33 @@ var transient TCharacter Character;
 var transient Rotator CustomizationRotation;
 var transient bool CustomizationRotationSet;
 
+// Issue #219: This class isn't native, but cooked. Adding a transient member is totally OK though.
+var private transient bool InitedHeadState;
+
 Delegate OnBodyPartLoadedDelegate(PawnContentRequest ContentRequest);
 
 simulated event PostBeginPlay ()
 {
+	local int i; // Issue #219
+
 	//Creation and assignment for the FaceFX audio component has been deferred to PostBeginPlay per discussion with Ryan Baker
 	if( WorldInfo.NetMode == NM_Standalone )
 	{
 		FacialAudioComp = new class'AudioComponent';
 		AttachComponent(FacialAudioComp);
 	}
+
+	// Start Issue #219
+	// Hack to get rid of duplicate eyelashes due to a content error
+	// This is not very noticeable, but gets messed up with custom heads
+	for (i = DefaultAttachments.Length - 1; i >= 0; i--)
+	{
+		if (PathName(DefaultAttachments[i]) ~= "Eyes_Default.ARC_Eyelashes_F")
+		{
+			DefaultAttachments.Remove(i, 1);
+		}
+	}
+	// End Issue #219
 
 	super.PostBeginPlay();
 
@@ -179,14 +196,18 @@ simulated function RequestFullPawnContent()
 	local XGUnit GameUnit;
 	local XComGameState_Unit UnitState;
 	local name UnderlayName;
-
+	local bool HasCustomUnderlay; // for issue #251	
 	UnitState = XComGameState_Unit(`XCOMHISTORY.GetGameStateForObjectID(ObjectID)); 
-
+	HasCustomUnderlay = class'CHHelpers'.default.CustomUnderlayCharTemplates.Find(UnitState.GetMyTemplateName()) != INDEX_NONE; 
 	bShouldUseUnderlay = ShouldUseUnderlay(UnitState);
 
 	//Underlay is the outfit that characters wear when they are in the background of the ship. It is a custom uni-body mesh that saves on mesh component draws and updates.
 	UnderlayName = GetUnderlayName(bShouldUseUnderlay, m_kAppearance);		
-
+	if(HasCustomUnderlay && UnderlayName != '') //issue #251 start
+	{
+		UnderlayName = m_kAppearance.nmTorso_Underlay;
+	}
+	// issue #251 end
 	GameUnit = XGUnit(GetGameUnit());
 	`log(self @ GetFuncName() @ `showvar(GameUnit) @ `showvar(m_bSetAppearance) @ `showvar(m_bSetArmorKit), , 'DevStreaming');
 	if (m_bSetAppearance)
@@ -261,8 +282,8 @@ simulated function RequestFullPawnContent()
 			PawnContentRequests.AddItem(kRequest);
 		}
 
-
-		if ((UnitState == none || UnitState.GetMyTemplateName() != 'Clerk') && !bShouldUseUnderlay && m_kAppearance.nmArms != '')
+		// issue #251: allow arms underlay usage only when it's a custom underlay
+		if ((UnitState == none || UnitState.GetMyTemplateName() != 'Clerk') && ( (!bShouldUseUnderlay && m_kAppearance.nmArms != '') || (bShouldUseUnderlay && HasCustomUnderlay) ) )
 		{
 			kRequest.ContentCategory = 'Arms';
 			kRequest.TemplateName = bShouldUseUnderlay ? m_kAppearance.nmArms_Underlay : m_kAppearance.nmArms;
@@ -317,8 +338,8 @@ simulated function RequestFullPawnContent()
 			kRequest.BodyPartLoadedFn = OnArmsLoaded;
 			PawnContentRequests.AddItem(kRequest);
 		}
-
-		if ((UnitState == none || UnitState.GetMyTemplateName() != 'Clerk') && !bShouldUseUnderlay && m_kAppearance.nmLegs != '')
+		// issue #251: allow legs underlay usage only when it's a custom underlay
+		if ((UnitState == none || UnitState.GetMyTemplateName() != 'Clerk') && ( (!bShouldUseUnderlay && m_kAppearance.nmLegs != '') || (bShouldUseUnderlay && HasCustomUnderlay) ) )
 		{
 			kRequest.ContentCategory = 'Legs';
 			kRequest.TemplateName = bShouldUseUnderlay ? m_kAppearance.nmLegs_Underlay : m_kAppearance.nmLegs;
@@ -906,72 +927,55 @@ simulated function UpdateMeshMaterials(MeshComponent MeshComp, optional bool bAt
 				}
 				ParentName = ParentMat.Name;
 
-				switch (ParentName)
+
+				//Start Issue #356
+				/// HL-Docs: ref:TintMaterialConfigs
+				if (class'CHHelpers'.default.SkinMaterial.Find(ParentName) != INDEX_NONE)
 				{
-					case 'M_HairCustomizable':
-					case 'F_HairCustomizable':
-					case 'M_HairCustomizable_Trans':
-					case 'F_HairCustomizable_Trans':
-					case 'HairSimple_TC':
-						UpdateHairMaterial(MIC);
-						break;
-					case 'HeadCustomizable_TC':						
-					case 'SkinCustomizable_TC':
-					case 'HeadCustomizable_Scars_TC':
-					case 'Skin_M':
-						UpdateSkinMaterial(MIC, true, MeshComp == m_kHeadMeshComponent);
-						break;
-					case 'SoldierArmorCustomizable_TC':
-					case 'Diffuse_TC_Metalic':		
-					case 'M_Master_PwrdArm_TC':
-					case 'Diffuse_TC_Metalic':
-					case 'Props_OpcMask_TC':
-					case 'CivilianCustomizable_TC':					
-					case 'SoldierArmorCustomizable_Decals_TC':
-					case 'UnitArmor_M':
-					case 'UnitArmor_M_ClearCoat':
-					case 'UnitArmor_M_OpacityMasked':
-						UpdateArmorMaterial(MeshComp, MIC, m_kAppearance.iArmorTint, m_kAppearance.iArmorTintSecondary, PatternsContent.Length > 0 ? PatternsContent[0] : none);
-						break;
-					case 'UnitWeapon_M':
-					case 'UnitWeapon_M_OpacityMasked':
-					case 'WeaponCustomizable_TC':
-					case 'UnitWeapon_M_ClearCoat':
-						// Weapon customization data is now stored in XComGameState_Item.WeaponAppearance, and applied in XGWeapon.UpdateWeaponMaterial
-						if(!bAttachment) // If this is an armor mesh (not a weapon) that is using the weapon material, apply the armor materials so they match
-						{ 
-							UpdateArmorMaterial(MeshComp, MIC, m_kAppearance.iArmorTint, m_kAppearance.iArmorTintSecondary, PatternsContent.Length > 0 ? PatternsContent[0] : none);
-						}
-						break;
-					case 'EyesCustomizable_TC':
-						UpdateEyesMaterial(MIC);
-						break;
-					case 'TC_Flags':
-						UpdateFlagMaterial(MIC);
-						break;
-					default:
-						//`log("UpdateMeshMaterials: Unknown material" @ ParentName @ "found on" @ self @ MeshComp);
-						break;
+					UpdateSkinMaterial(MIC, true, MeshComp == m_kHeadMeshComponent);
+				}
+				else if (class'CHHelpers'.default.HairMaterial.Find(ParentName) != INDEX_NONE)
+				{
+					UpdateHairMaterial(MIC);
 				}
 
-				// Start Issue #169
-				if (UnitState_Menu != none)
+				if (class'CHHelpers'.default.ArmorMaterial.Find(ParentName) != INDEX_NONE ||
+					// If this is an armor mesh (not a weapon) that is using the weapon material, apply the armor materials so they match
+					!bAttachment && class'CHHelpers'.default.WepAsArmorMaterial.Find(ParentName) != INDEX_NONE)
 				{
-					UnitState = UnitState_Menu;
-				}
-				else // We're at a Saved Game
-				{
-					UnitState = XComGameState_Unit(`XCOMHISTORY.GetGameStateForObjectID(ObjectID));
+					UpdateArmorMaterial(MeshComp, MIC, m_kAppearance.iArmorTint, m_kAppearance.iArmorTintSecondary, PatternsContent.Length > 0 ? PatternsContent[0] : none);
 				}
 
-				DLCInfos = `ONLINEEVENTMGR.GetDLCInfos(false);
-				for(i = 0; i < DLCInfos.Length; ++i)
+				if (class'CHHelpers'.default.EyeMaterial.Find(ParentName) != INDEX_NONE)
 				{
-					DLCInfos[i].UpdateHumanPawnMeshMaterial(UnitState, self, MeshComp, ParentName, MIC);
+					UpdateEyesMaterial(MIC);
 				}
-				// End Issue #169
+
+				if (class'CHHelpers'.default.FlagMaterial.Find(ParentName) != INDEX_NONE)
+				{
+					UpdateFlagMaterial(MIC);
+				}
+				//End Issue #356
 			}
 		}
+
+		// Start Issue #216 -- wraps Issue #169
+		if (UnitState_Menu != none)
+		{
+			UnitState = UnitState_Menu;
+		}
+		else // We're at a Saved Game
+		{
+			UnitState = XComGameState_Unit(`XCOMHISTORY.GetGameStateForObjectID(ObjectID));
+		}
+
+		/// HL-Docs: ref:UpdateHumanPawnMeshComponent
+		DLCInfos = `ONLINEEVENTMGR.GetDLCInfos(false);
+		for(i = 0; i < DLCInfos.Length; ++i)
+		{
+			DLCInfos[i].UpdateHumanPawnMeshComponent(UnitState, self, MeshComp);
+		}
+		// End Issue #216 -- wraps Issue #169
 
 		if(MeshComp.bNeedsReattach)
 			MeshComp.ReattachIfNeeded();
@@ -1256,13 +1260,83 @@ simulated function OnHeadLoaded(PawnContentRequest ContentRequest)
 		return;
 
 	HeadContent = XComHeadContent(ContentRequest.kContent);
+
+	/// HL-Docs: feature:ModAddedHeads; issue:219; tags:customization,pawns
+	/// Allows Human Pawns to freely switch between default head and separate
+	/// skeletal mesh heads without resorting to invisible head hacks and helmets.
+	///
+	/// ```ini
+	/// +BodyPartTemplateConfig=(PartType="Head", TemplateName="Augmentations_Head_AFR", ArchetypeName="MusashiAndroidHeads.ARC_Head_Afr_M", Gender=eGender_Male, Race=eRace_African, bCanUseOnCivilian=false, SpecializedType=false, DLCName="Augmentations")
+	/// ```
+	///
+	/// ## Base-game behavior
+	///
+	/// There are two kinds of Human Pawns in the game: Pawns that share their
+	/// head mesh with their pawn mesh, and pawns that don't. Note that the pawn mesh itself
+	/// never has any geometry except for a possible head.
+	///
+	/// In more concrete terms, the standard human pawn meshes have their head included, and the
+	/// head archetypes reference the same mesh. The Human Pawn recognizes this and doesn't
+	/// actually attach a head, and instead aliases the head component to the pawn component
+	/// so that all changes to the head customization apply to the mesh.
+	///
+	/// Sparks on the other hand have the option to switch between different head meshes,
+	/// and the head mesh never references the pawn mesh. The pawn mesh is entirely void of geometry.
+	/// The Human Pawn recognizes this and uses a separate mesh component for the head.
+	///
+	/// Where it all goes wrong is when those two types of heads are being mixed. The
+	/// Human Pawn first aliases the head to the pawn, and when a custom head is being
+	/// used, it changes the head mesh -- and, due to the alias, also the base pawn mesh.
+	/// Even worse, it tries to attach the pawn to the pawn itself instead of the head to the
+	/// pawn. This generally crashes the game.
+	///
+	/// ## The fix
+	///
+	/// * We handle the case where we go from a standard head to a custom head correctly and don't crash
+	/// * We apply an invisible material to the entire pawn mesh when a custom head is being used
+	///     * For Sparks, this causes no change in behavior because the Spark pawn has no geometry
+	///     * For Humans, this is desired because otherwise, the base head clips with any custom head
+	///     * An invisible material is used because outright hiding the pawn turns off parts of the animation system =)
+	///
+	/// ## Additional nice-to-have
+	///
+	/// Some mod-added heads don't work well with certain customization categories. For example, the
+	/// [Augmentations](https://steamcommunity.com/sharedfiles/filedetails/?id=1293725945) mod adds Cyborg
+	/// heads, which generally don't have facial hair (but other facial props are okay!)
+	///
+	/// This change allows custom head archetypes to suppress certain facial customization categories.
+	/// Example from Augmentations:
+	///
+	/// `XComContent.ini`:
+	///
+	/// ```ini
+	/// [XComGame.X2BodyPartTemplateManager]
+	/// +BodyPartTemplateConfig=(PartType="Head", TemplateName="Augmentations_Head_AFR", ArchetypeName="MusashiAndroidHeads.ARC_Head_Afr_M", Gender=eGender_Male, Race=eRace_African, bCanUseOnCivilian=false, SpecializedType=false, DLCName="Augmentations")
+	/// ;                                                                                                       Object name ^^^^^^^^^^^^^^
+	/// [XComGame.CHHelpers]
+	/// +HeadSuppressesHair="ARC_Head_Afr_M"
+	/// +HeadSuppressesBeard="ARC_Head_Afr_M"
+	/// ```
+	///
+	/// The specified name is the object name of the archetype. Full list of arrays:
+	///
+	/// * `HeadSuppressesHair`
+	/// * `HeadSuppressesLowerFaceProp`
+	/// * `HeadSuppressesUpperFaceProp`
+	/// * `HeadSuppressesHelmet`
+	/// * `HeadSuppressesBeard`
+
+
 	
+	// Start Issue #219
+	// The commented out code serves purely as documentation of the default behavior.
+	/*
 	if( HeadContent.SkeletalMesh != Mesh.SkeletalMesh )
  	{
  		m_kHeadMeshComponent.SetSkeletalMesh(HeadContent.SkeletalMesh);
  		m_kHeadMeshComponent.SetParentAnimComponent(Mesh);
 		AttachComponent(m_kHeadMeshComponent);
-		Mesh.AppendSockets(m_kHeadMeshComponent.Sockets, true);	
+		Mesh.AppendSockets(m_kHeadMeshComponent.Sockets, true);
 		// Start Issue #21
 		// Call function allowing DLC/Mods to append sockets to units
 		DLCAppendSockets();
@@ -1273,6 +1347,63 @@ simulated function OnHeadLoaded(PawnContentRequest ContentRequest)
 	{
 		m_kHeadMeshComponent = Mesh; //The base mesh is the head for pawns that load head content
 	}
+	*/
+
+	/*
+	 * Our solution: Fix m_kHeadMeshComponent so it refers to a valid component and
+	 * doesn't break horribly when this is run multiple times. This means that:
+	 * - `Mesh.SkeletalMesh` is never changed at runtime and always refers to the base pawn mesh
+	 * - when `m_kHeadMeshComponent == Mesh`, the pawn mesh is the head.
+	 *   If `m_kHeadMeshComponent != Mesh`, `m_kHeadMeshComponent` itself is the head.
+	 * There seems to be one issue -- either native Spawn() code, or native XComUnitPawnNativeBase code
+	 * already assigns something to m_kHeadMeshComponent. Thus we need InitedHeadState to properly
+	 * initialize our state. Ideally we somehow stored that info in the m_kHeadMeshComponent, but I didn't find a way
+	 */
+	if (m_kHeadMeshComponent == none || !InitedHeadState)
+	{
+		// We initialize with the same head as our pawn mesh
+		m_kHeadMeshComponent = Mesh;
+		InitedHeadState = true;
+	}
+
+	// We have a valid head component (that *may* point to the pawn mesh component, or not) and need a different mesh
+	if (m_kHeadMeshComponent.SkeletalMesh != HeadContent.SkeletalMesh)
+	{
+		if (m_kHeadMeshComponent == Mesh)
+		{
+			// We have the pawn head, but need a custom head -- create it and hide the base
+			CreateCustomHead(HeadContent.SkeletalMesh);
+			HideBaseHead();
+		}
+		else
+		{
+			// We already have a dedicated head component, but we want a different mesh. Check if we need to
+			// switch back to the pawn or change the head mesh
+			if (Mesh.SkeletalMesh != HeadContent.SkeletalMesh)
+			{
+				// Update mesh
+				m_kHeadMeshComponent.SetSkeletalMesh(HeadContent.SkeletalMesh);
+				Mesh.AppendSockets(m_kHeadMeshComponent.Sockets, true);
+				// Start Issue #21
+				// Call function allowing DLC/Mods to append sockets to units
+				DLCAppendSockets();
+				// End Issue #21
+				m_kHeadMeshComponent.SetHidden(false);
+			}
+			else
+			{
+				// Switch back to the base pawn
+				m_kHeadMeshComponent.SetHidden(true);
+				DetachComponent(m_kHeadMeshComponent);
+				m_kHeadMeshComponent = Mesh;
+				// Start Issue #21
+				// Call function allowing DLC/Mods to append sockets to units
+				DLCAppendSockets();
+				// End Issue #21
+			}
+		}
+	}
+	// End Issue #219
 
 	ResetMaterials(m_kHeadMeshComponent);
 
@@ -1290,7 +1421,7 @@ simulated function OnHeadLoaded(PawnContentRequest ContentRequest)
 	}
 
 	//Play the additive anim that will morph the head shape from the ref head
-	if(HelmetContent != none && HelmetContent.bUseDefaultHead)
+	if(!SuppressHelmet() && HelmetContent != none && HelmetContent.bUseDefaultHead) // Issue #219
 	{
 		if(m_kAppearance.iGender == eGender_Female)
 		{
@@ -1308,6 +1439,45 @@ simulated function OnHeadLoaded(PawnContentRequest ContentRequest)
 
 	MarkAuxParametersAsDirty(m_bAuxParamNeedsPrimary, m_bAuxParamNeedsSecondary, m_bAuxParamUse3POutline);
 }
+
+// Start Issue #219
+simulated function CreateCustomHead(SkeletalMesh HeadMesh)
+{
+	m_kHeadMeshComponent = new (self) class'SkeletalMeshComponent';
+	m_kHeadMeshComponent.SetHasPhysicsAssetInstance(false, true);
+	m_kHeadMeshComponent.SetOwnerNoSee(false);
+	m_kHeadMeshComponent.SetIgnoreOwnerHidden(false);
+	m_kHeadMeshComponent.SetActorCollision(true, false, false);
+	m_kHeadMeshComponent.SetAcceptsDynamicDecals(true);
+
+	m_kHeadMeshComponent.SetSkeletalMesh(HeadMesh);
+	m_kHeadMeshComponent.SetParentAnimComponent(Mesh);
+	AttachComponent(m_kHeadMeshComponent);
+	Mesh.AppendSockets(m_kHeadMeshComponent.Sockets, true);
+	// Start Issue #21
+	// Call function allowing DLC/Mods to append sockets to units
+	DLCAppendSockets();
+	// End Issue #21
+	m_kHeadMeshComponent.SetHidden(false);
+}
+
+// We can't SetHidden(true) the base pawn mesh because it messes up
+// the additive animation system. Hence, just use invisible materials
+simulated function HideBaseHead()
+{
+	local MaterialInterface HiddenMaterial;
+	local int i;
+
+	// Warning: This must be loaded dynamically. Otherwise, we'll end up cooking a reference to it
+	// into the Highlander, which in turn breaks compatibility with base game cooked files
+	HiddenMaterial = Material(`CONTENT.RequestGameArchetype("HumanShared.Materials.Hidden"));
+
+	for (i = 0; i < Mesh.GetNumElements(); i++)
+	{
+		Mesh.SetMaterial(i, HiddenMaterial);
+	}
+}
+// End Issue #219
 
 simulated function OnArmsLoaded(PawnContentRequest ContentRequest)
 {
@@ -1344,8 +1514,10 @@ simulated function OnArmsLoaded(PawnContentRequest ContentRequest)
 
 			UseMeshComponent = m_kArmsMC;
 
-			if(m_kArmsMC != none && m_kArmsMC.SkeletalMesh == UseSkeletalMesh && LeftArmContent != none && ArmsContent != none &&
-			   (LeftArmContent.OverrideMaterial == ArmsContent.OverrideMaterial))
+			// Start Issue #350
+			if(m_kArmsMC != none && m_kArmsMC.SkeletalMesh == UseSkeletalMesh && ArmsContent != none &&
+			   (ArmsContent.OverrideMaterial == UseArmsContent.OverrideMaterial))
+			// End Issue #350
 			{
 				return;
 			}
@@ -1366,8 +1538,10 @@ simulated function OnArmsLoaded(PawnContentRequest ContentRequest)
 
 			UseMeshComponent = m_kLeftArm;
 
-			if(m_kLeftArm != none && m_kLeftArm.SkeletalMesh == UseSkeletalMesh && LeftArmContent != none && ArmsContent != none &&
-			   (LeftArmContent.OverrideMaterial == ArmsContent.OverrideMaterial))
+			// Start Issue #354
+			if(m_kLeftArm != none && m_kLeftArm.SkeletalMesh == UseSkeletalMesh && LeftArmContent != none &&
+			   (LeftArmContent.OverrideMaterial == UseArmsContent.OverrideMaterial))
+			// End Issue #354
 			{
 				return;
 			}
@@ -1389,8 +1563,10 @@ simulated function OnArmsLoaded(PawnContentRequest ContentRequest)
 
 			UseMeshComponent = m_kRightArm;
 
-			if(m_kRightArm != none && m_kRightArm.SkeletalMesh == UseSkeletalMesh && RightArmContent != none && ArmsContent != none &&
-			   (RightArmContent.OverrideMaterial == ArmsContent.OverrideMaterial))
+			// Start Issue #354
+			if(m_kRightArm != none && m_kRightArm.SkeletalMesh == UseSkeletalMesh && RightArmContent != none &&
+			   (RightArmContent.OverrideMaterial == UseArmsContent.OverrideMaterial))
+			// End Issue #354
 			{
 				return;
 			}
@@ -1405,9 +1581,19 @@ simulated function OnArmsLoaded(PawnContentRequest ContentRequest)
 
 		case 'LeftArmDeco':
 			UseMeshComponent = m_kLeftArmDeco;
-
-			if(m_kLeftArmDeco != none && m_kLeftArmDeco.SkeletalMesh == UseSkeletalMesh && LeftArmDecoContent != none && ArmsContent != none &&
-			   (LeftArmDecoContent.OverrideMaterial == ArmsContent.OverrideMaterial))
+			// Start Issue #350
+			// Start Issue #369
+			//if (m_kArmsMC != none && m_kArmsMC.SkeletalMesh != none)
+			//{
+				//UseSkeletalMesh = none;
+				//bSkipAttachment = true;
+			//}
+			// End Issue #369
+			// End Issue #350
+			// Start Issue #354
+			if(m_kLeftArmDeco != none && m_kLeftArmDeco.SkeletalMesh == UseSkeletalMesh && LeftArmDecoContent != none &&
+			   (LeftArmDecoContent.OverrideMaterial == UseArmsContent.OverrideMaterial))
+			// End Issue #354
 			{
 				return;
 			}
@@ -1422,9 +1608,20 @@ simulated function OnArmsLoaded(PawnContentRequest ContentRequest)
 
 		case 'RightArmDeco':		
 			UseMeshComponent = m_kRightArmDeco;
-
-			if(m_kRightArmDeco != none && m_kRightArmDeco.SkeletalMesh == UseSkeletalMesh && RightArmDecoContent != none && ArmsContent != none &&
-			   (RightArmDecoContent.OverrideMaterial == ArmsContent.OverrideMaterial))
+			// Start Issue #350
+			// Start Issue #369
+			//if (m_kArmsMC != none && m_kArmsMC.SkeletalMesh != none)
+			//if (ArmsContent != none)
+			//{
+				//UseSkeletalMesh = none;
+				//bSkipAttachment = true;
+			//}
+			// End Issue #369
+			// End Issue #350
+			// Start Issue #354
+			if(m_kRightArmDeco != none && m_kRightArmDeco.SkeletalMesh == UseSkeletalMesh && RightArmDecoContent != none &&
+			   (RightArmDecoContent.OverrideMaterial == UseArmsContent.OverrideMaterial))
+			// End Issue #354
 			{
 				return;
 			}
@@ -1439,14 +1636,17 @@ simulated function OnArmsLoaded(PawnContentRequest ContentRequest)
 
 		case 'LeftForearm':
 			UseMeshComponent = m_kLeftForearmMC;
-			if (LeftArmContent != none && LeftArmContent.bHideForearms)
+			// Single line Change for Issue #350
+			if (m_kLeftArm != none && m_kLeftArm.SkeletalMesh != none && LeftArmContent != none && LeftArmContent.bHideForearms || m_kArmsMC != none && m_kArmsMC.SkeletalMesh != none && ArmsContent != none && ArmsContent.bHideForearms)
 			{
 				UseSkeletalMesh = none;
 				bSkipAttachment = true;
 			}
 
-			if (m_kLeftForearmMC != none && m_kLeftForearmMC.SkeletalMesh == UseSkeletalMesh && LeftForearmContent != none && ArmsContent != none &&
-				(LeftForearmContent.OverrideMaterial == ArmsContent.OverrideMaterial))
+			// Start Issue #354
+			if(m_kLeftForearmMC != none && m_kLeftForearmMC.SkeletalMesh == UseSkeletalMesh && LeftForearmContent != none &&
+			   (LeftForearmContent.OverrideMaterial == UseArmsContent.OverrideMaterial))
+			// End Issue #354
 			{
 				return;
 			}
@@ -1461,14 +1661,17 @@ simulated function OnArmsLoaded(PawnContentRequest ContentRequest)
 
 		case 'RightForearm':
 			UseMeshComponent = m_kRightForearmMC;
-			if (RightArmContent != none && RightArmContent.bHideForearms)
+			// Single line Change for Issue #350
+			if (m_kRightArm != none && m_kRightArm.SkeletalMesh != none && RightArmContent != none && RightArmContent.bHideForearms || m_kArmsMC != none && m_kArmsMC.SkeletalMesh != none && ArmsContent != none && ArmsContent.bHideForearms)
 			{
 				UseSkeletalMesh = none;
 				bSkipAttachment = true;
 			}
 
-			if (m_kRightForearmMC != none && m_kRightForearmMC.SkeletalMesh == UseSkeletalMesh && RightForearmContent != none && ArmsContent != none &&
-				(RightForearmContent.OverrideMaterial == ArmsContent.OverrideMaterial))
+			// Start Issue #354
+			if(m_kRightForearmMC != none && m_kRightForearmMC.SkeletalMesh == UseSkeletalMesh && RightForearmContent != none &&
+			   (RightForearmContent.OverrideMaterial == UseArmsContent.OverrideMaterial))
+			// End Issue #354
 			{
 				return;
 			}
@@ -1485,36 +1688,38 @@ simulated function OnArmsLoaded(PawnContentRequest ContentRequest)
 	if (!bSkipAttachment || UseSkeletalMesh == none)
 	{
 		//Make a new one and set it up
-		if (m_kArmsMC != UseMeshComponent)
+		// Start Issue #350
+		if (UseMeshComponent == none)
 		{
-			DetachComponent(UseMeshComponent);
+			//DetachComponent(UseMeshComponent);
 			UseMeshComponent = new(self) class'SkeletalMeshComponent';
-		}
 
-		switch (ContentRequest.ContentCategory)
-		{
-		case 'Arms':
-			m_kArmsMC = UseMeshComponent;
-			break;
-		case 'LeftArm':
-			m_kLeftArm = UseMeshComponent;
-			break;
-		case 'RightArm':
-			m_kRightArm = UseMeshComponent;
-			break;
-		case 'LeftArmDeco':
-			m_kLeftArmDeco = UseMeshComponent;
-			break;
-		case 'RightArmDeco':
-			m_kRightArmDeco = UseMeshComponent;
-			break;
-		case 'LeftForearm':
-			m_kLeftForearmMC = UseMeshComponent;
-			break;
-		case 'RightForearm':
-			m_kRightForearmMC = UseMeshComponent;
-			break;
+			switch (ContentRequest.ContentCategory)
+			{
+			case 'Arms':
+				m_kArmsMC = UseMeshComponent;
+				break;
+			case 'LeftArm':
+				m_kLeftArm = UseMeshComponent;
+				break;
+			case 'RightArm':
+				m_kRightArm = UseMeshComponent;
+				break;
+			case 'LeftArmDeco':
+				m_kLeftArmDeco = UseMeshComponent;
+				break;
+			case 'RightArmDeco':
+				m_kRightArmDeco = UseMeshComponent;
+				break;
+			case 'LeftForearm':
+				m_kLeftForearmMC = UseMeshComponent;
+				break;
+			case 'RightForearm':
+				m_kRightForearmMC = UseMeshComponent;
+				break;
+			}
 		}
+		// End Issue #350
 
 		UseMeshComponent.LastRenderTime = WorldInfo.TimeSeconds;
 		UseMeshComponent.SetSkeletalMesh(UseSkeletalMesh);
@@ -1630,7 +1835,7 @@ simulated function OnBodyPartLoaded(PawnContentRequest ContentRequest)
 		return;
 	case 'Hair':
 		UseMeshComponent = m_kHairMC;
-		if(HelmetContent != none && HelmetContent.ObjectArchetype != none && m_kHelmetMC.SkeletalMesh != none)
+		if(!SuppressHelmet() && HelmetContent != none && HelmetContent.ObjectArchetype != none && m_kHelmetMC.SkeletalMesh != none) // Issue #219
 		{
 			if(HelmetContent.FallbackHairIndex > -1 &&
 			   HelmetContent.FallbackHairIndex < BodyPartContent.FallbackSkeletalMeshes.Length &&
@@ -1645,6 +1850,14 @@ simulated function OnBodyPartLoaded(PawnContentRequest ContentRequest)
 				bSkipAttachment = true;
 			}
 		}
+
+		// Start Issue #219
+		if (SuppressHairstyle())
+		{
+			UseSkeletalMesh = none;				
+			bSkipAttachment = true;
+		}
+		// End Issue #219
 
 		if(UseMeshComponent.SkeletalMesh == UseSkeletalMesh && CurrentHairContent != none &&
 		   ((!BodyPartContent.ShouldUseOverrideMaterial() && !CurrentHairContent.ShouldUseOverrideMaterial()) || CurrentHairContent.OverrideMaterial == BodyPartContent.OverrideMaterial))
@@ -1664,8 +1877,7 @@ simulated function OnBodyPartLoaded(PawnContentRequest ContentRequest)
 
 	case 'Beards':
 		UseMeshComponent = m_kBeardMC;
-		if( (HelmetContent != none && HelmetContent.bHideFacialHair) ||
-		    (LowerFacialContent != none && LowerFacialContent.bHideFacialHair) )
+		if (SuppressBeard()) // Issue #219
 		{
 			UseSkeletalMesh = none;
 			bSkipAttachment = true;
@@ -1698,7 +1910,7 @@ simulated function OnBodyPartLoaded(PawnContentRequest ContentRequest)
 			}
 		}
 
-		if(HelmetContent != none && (HelmetContent.bHideUpperFacialProps || bHideForUnderlay || bForbiddenBySet))
+		if(SuppressUpperFaceProp() || bHideForUnderlay || bForbiddenBySet) // Issue #219
 		{
 			UseSkeletalMesh = none;
 			bSkipAttachment = true;
@@ -1731,7 +1943,7 @@ simulated function OnBodyPartLoaded(PawnContentRequest ContentRequest)
 			}
 		}
 
-		if(HelmetContent != none && (HelmetContent.bHideLowerFacialProps || bHideForUnderlay || bForbiddenBySet))
+		if(SuppressLowerFaceProp() || bHideForUnderlay || bForbiddenBySet) // Issue #219
 		{
 			UseSkeletalMesh = none;
 			bSkipAttachment = true;
@@ -1752,7 +1964,19 @@ simulated function OnBodyPartLoaded(PawnContentRequest ContentRequest)
 		break;
 
 	case 'Helmets':
-		if( HelmetContent == BodyPartContent )
+		// Start Issue #219 -- moved up
+		UseMeshComponent = m_kHelmetMC;
+
+		if(bHideForUnderlay || SuppressHelmet())
+		{
+			UseSkeletalMesh = none;
+			bSkipAttachment = true;
+		}
+		// End Issue #219 -- moved up
+		// Start Issue #354
+		if(UseMeshComponent.SkeletalMesh == UseSkeletalMesh && HelmetContent != none && 
+		   ((!BodyPartContent.ShouldUseOverrideMaterial() && !HelmetContent.ShouldUseOverrideMaterial()) || HelmetContent.OverrideMaterial == BodyPartContent.OverrideMaterial))
+		// End Issue #354
 		{
 			return;
 		}
@@ -1760,14 +1984,8 @@ simulated function OnBodyPartLoaded(PawnContentRequest ContentRequest)
 		RemoveExistingBodyPartAttachments(HelmetContent);
 		m_HelmetRequest = ContentRequest;
 		HelmetContent = XComHelmetContent(ContentRequest.kContent);
-		UseMeshComponent = m_kHelmetMC;
-		if(HelmetContent != none && bHideForUnderlay)
-		{
-			UseMeshComponent.SetSkeletalMesh(none);
-			bSkipAttachment = true;
-		}
 
-		if(HelmetContent.bUseDefaultHead && !bHideForUnderlay)
+		if(!SuppressHelmet() && HelmetContent.bUseDefaultHead && !bHideForUnderlay) // Issue #219
 		{
 			if(m_kAppearance.iGender == eGender_Female)
 			{
@@ -1962,6 +2180,51 @@ simulated function OnBodyPartLoaded(PawnContentRequest ContentRequest)
 	}
 }
 
+// Start Issue #219
+// Use the currently loaded helmet and head to determine whether a
+// hairstyle should be shown
+
+// Start Issue #219: Replaced the calling each other with explicit mesh checks.
+// Basically only makes a difference on the Avenger, where parts may be hidden but not "suppressed".
+function bool SuppressHairstyle()
+{
+	return (HelmetContent != none && m_kHelmetMC.SkeletalMesh != none && HelmetContent.FallbackHairIndex <= -1) ||
+			class'CHHelpers'.default.HeadSuppressesHair.Find(HeadContent.Name) > INDEX_NONE;
+}
+
+// Use the currently loaded helmet and head to determine whether a
+// lower face prop should be shown
+function bool SuppressLowerFaceProp()
+{
+	return (HelmetContent != none && m_kHelmetMC.SkeletalMesh != none && HelmetContent.bHideLowerFacialProps) ||
+			class'CHHelpers'.default.HeadSuppressesLowerFaceProp.Find(HeadContent.Name) > INDEX_NONE;
+}
+
+// Use the currently loaded helmet and hat to determine whether an
+// upper face prop should be shown
+function bool SuppressUpperFaceProp()
+{
+	return (HelmetContent != none && m_kHelmetMC.SkeletalMesh != none && HelmetContent.bHideUpperFacialProps) ||
+			class'CHHelpers'.default.HeadSuppressesUpperFaceProp.Find(HeadContent.Name) > INDEX_NONE;
+}
+
+// Use the currently loaded head to determine whether a
+// helmet should be shown
+function bool SuppressHelmet()
+{
+	return class'CHHelpers'.default.HeadSuppressesHelmet.Find(HeadContent.Name) > INDEX_NONE;
+}
+
+// Use the currently loaded head and helmet and lower face prop
+// to determine whether facial hair should be shown
+function bool SuppressBeard()
+{
+	return (HelmetContent != none && m_kHelmetMC.SkeletalMesh != none && HelmetContent.bHideFacialHair) ||
+		   (LowerFacialContent != none && m_kLowerFacialMC.SkeletalMesh !=none && LowerFacialContent.bHideFacialHair) ||
+		   class'CHHelpers'.default.HeadSuppressesBeard.Find(HeadContent.Name) > INDEX_NONE;
+}
+// End Issue #219
+
 function RemoveExistingBodyPartAttachments(XComBodyPartContent BodyPartContent)
 {
 	local int AttachmentIndex;
@@ -2102,6 +2365,12 @@ static simulated function UpdateAppearance( out TAppearance mAppearance, const o
 	if (kAppearance.nmArms != '')
 	{
 		mAppearance.nmArms = kAppearance.nmArms;
+		// Start Issue #384
+		/// HL-Docs: ref:Bugfixes; issue:384
+		/// Remove cosmetics from separate Left and Right Arm slots when updating Appearance to one that includes a cosmetic body part for both Arms in one slot.
+		mAppearance.nmLeftArm = '';
+		mAppearance.nmRightArm = '';
+		// End Issue #384
 	}
 	if (kAppearance.nmBeard != '')
 	{
@@ -2163,6 +2432,48 @@ static simulated function UpdateAppearance( out TAppearance mAppearance, const o
 	{
 		mAppearance.nmVoice = kAppearance.nmVoice;
 	}
+	// Start Issue #384
+	/// HL-Docs: ref:Bugfixes; issue:384
+	/// Allow `bForcedAppearance` to work with new deco slots added with Anarchy Children and WOTC.
+	if (kAppearance.nmLeftArm != '')
+	{
+		mAppearance.nmLeftArm = kAppearance.nmLeftArm;
+		mAppearance.nmArms = '';
+	}
+	if (kAppearance.nmRightArm != '')
+	{
+		mAppearance.nmRightArm = kAppearance.nmRightArm;
+		mAppearance.nmArms = '';
+	}
+	if (kAppearance.nmLeftArmDeco != '')
+	{
+		mAppearance.nmLeftArmDeco = kAppearance.nmLeftArmDeco;
+	}
+	if (kAppearance.nmRightArmDeco != '')
+	{
+		mAppearance.nmRightArmDeco = kAppearance.nmRightArmDeco;
+	}
+	if (kAppearance.nmLeftForearm != '')
+	{
+		mAppearance.nmLeftForearm = kAppearance.nmLeftForearm;
+	}
+	if (kAppearance.nmRightForearm != '')
+	{
+		mAppearance.nmRightForearm = kAppearance.nmRightForearm;
+	}
+	if (kAppearance.nmThighs != '')
+	{
+		mAppearance.nmThighs = kAppearance.nmThighs;
+	}
+	if (kAppearance.nmShins != '')
+	{
+		mAppearance.nmShins = kAppearance.nmShins;
+	}
+	if (kAppearance.nmTorsoDeco != '')
+	{
+		mAppearance.nmTorsoDeco = kAppearance.nmTorsoDeco;
+	}
+	// End Issue #384
 }
 
 

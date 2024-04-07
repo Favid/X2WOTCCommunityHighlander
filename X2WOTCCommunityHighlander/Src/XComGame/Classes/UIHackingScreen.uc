@@ -20,9 +20,11 @@ var XComGameState_BaseObject HackTargetObject;
 var float m_introDuration;
 var float m_hackDuration;
 
+var bool m_UsingSkulljackScreen; // Issue #330, centralize logic a bit
 var bool m_SkullJacking;
 var bool m_SkullMining;
 var bool m_hackStarted;
+var bool m_hackCanceled;  // Issue #648
 var bool bWaitingForInput;
 var int m_rewardsTaken;
 
@@ -69,6 +71,7 @@ simulated function InitScreen(XComPlayerController InitController, UIMovie InitM
 	local X2Action_Hack ActionOwner;
 	local X2AbilityTemplate HackAbilityTemplate;
 	local StateObjectReference FinalizeHackRef, CancelHackRef;
+	local XComLWTuple Tuple; // Issue #330
 
 	super.InitScreen(InitController, InitMovie, InitName);
 
@@ -90,7 +93,38 @@ simulated function InitScreen(XComPlayerController InitController, UIMovie InitM
 	FinalizeHackRef = UnitState.FindAbility(HackAbilityTemplate.FinalizeAbilityName);
 	m_SkullJacking = (HackAbilityTemplate.FinalizeAbilityName == 'FinalizeSKULLJACK');
 	m_SkullMining = (HackAbilityTemplate.FinalizeAbilityName == 'FinalizeSKULLMINE');
-	MC.FunctionNum("SetScreenType", (m_SkullJacking || m_SkullMining) ? 1 : 0);
+
+	// Start Issue #330 -- set up a Tuple to get our hacking type
+	Tuple = new class'XComLWTuple';
+	Tuple.Id = 'OverrideHackingScreenType';
+	Tuple.Data.Add(2);
+
+	Tuple.Data[0].kind = XComLWTVObject;
+	Tuple.Data[0].o = OriginalContext;
+	Tuple.Data[1].kind = XComLWTVBool;
+	Tuple.Data[1].b = (m_SkullJacking || m_SkullMining);
+
+	`XEVENTMGR.TriggerEvent('OverrideHackingScreenType', Tuple, self, none);
+
+	m_UsingSkulljackScreen = Tuple.Data[1].b;
+	// End Issue #330
+
+	// Start Issue #330
+	// A 2D hacking screen will pop up way too early. We want to
+	// give it a bit of time to sync with the melee animation better.
+	if (m_UsingSkulljackScreen && !bIsIn3D)
+	{
+		// TODO: With this, the screen still flashes for a single frame.
+		// I have absolutely no idea why, or how to fix this.
+		Hide();
+		SetTimer(3.3, false, nameof(DelayedSetScreenType));
+	}
+	else
+	{
+		MC.FunctionNum("SetScreenType", m_UsingSkulljackScreen ? 1 : 0);
+	}
+	// End Issue #330
+
 	
 	//set up the advent splash screen text
 	MC.BeginFunctionOp("SetAdventStartScreen");
@@ -149,12 +183,45 @@ simulated function OnInit()
 	AS_SetMeterRolledScore(0);
 	RefreshPreviewState();
 
-	if( !m_SkullJacking && !m_SkullMining )
+	if( !m_UsingSkulljackScreen ) // Issue #330
 	{
 		WorldInfo.PlayAkEvent(AkEvent'SoundTacticalUI_Hacking.Hack_Start');
 	}
 	SetTimer(3.3, False, 'StartScaryComputerLoopAkEvent');
 }
+
+// Start Issue #330
+simulated function DelayedSetScreenType()
+{
+	local GfxObject Obj;
+	// Much hacky follows, we need to restart the intro using good ol' sync Scaleform functions
+	// from GFxUI.
+	Obj = Movie.GetVariableObject(MCPath$ (m_UsingSkulljackScreen ? ".skullJackIntro" : ".adventIntro"));
+	Obj.GotoAndPlayI(0);
+
+	MC.FunctionNum("SetScreenType", m_UsingSkulljackScreen ? 1 : 0);
+	Show();
+	AddTweenBetween("_alpha", 100, 0, class'UIUtilities'.const.INTRO_ANIMATION_TIME * 2, 0.0);
+}
+
+simulated function Show()
+{
+	super.Show();
+	if (MouseGuardInst != none)
+	{
+		MouseGuardInst.Show();
+	}
+}
+
+simulated function Hide()
+{
+	super.Hide();
+	if (MouseGuardInst != none)
+	{
+		MouseGuardInst.Hide();
+	}
+}
+// End Issue #330
 
 simulated function bool CanCancel()
 {
@@ -274,19 +341,15 @@ simulated function float GetHackChance(int RewardIndex)
 
 simulated function PopulateSoldierInfo()
 {
-	local XGUnit Unit;
-
-	Unit = XGUnit(UnitState.GetVisualizer());
-	
-	// Start Issue #106
-	AS_SetSoldierInfo(class'UIUtilities_Text'.static.GetColoredText(Caps(`GET_RANK_STR(Unit.GetCharacterRank(), Unit.GetVisualizedGameState().GetSoldierClassTemplateName())), euiState_Faded, 17), 
+	// Start Issue #106, #408
+	AS_SetSoldierInfo(class'UIUtilities_Text'.static.GetColoredText(Caps(UnitState.GetSoldierRankName()), euiState_Faded, 17), 
 						class'UIUtilities_Text'.static.GetColoredText(Caps(UnitState.GetName(eNameType_Full)), eUIState_Normal, 22), 
 						class'UIUtilities_Text'.static.GetColoredText(Caps(UnitState.GetNickName(false)), eUIState_Header, 30),
-						class'UIUtilities_Image'.static.GetRankIcon(Unit.GetCharacterRank(), Unit.GetVisualizedGameState().GetSoldierClassTemplateName()),
+						UnitState.GetSoldierRankIcon(),
 						UnitState.GetSoldierClassIcon(),
 						strHackAbilityLabel,
 						string(int(HackOffense)));
-	// End Issue #106
+	// End Issue #106, #408
 }
 
 simulated function PopulateEnemyInfo()
@@ -329,11 +392,30 @@ simulated function bool OnCancel(optional string arg = "")
 {
 	local XComGameStateContext_Ability CancelContext;
 
-	`assert(!m_hackStarted);
+	// Start Issue #648
+	//
+	// (Fix from vanilla community highlander)
+	//
+	// The input handler code only prevents cancellation with the mouse on the cancel button after
+	// a hack is started, it doesn't prevent the ESC key from triggering OnCancel, so this assertion may often
+	// fire. Just turn off the assert and guard the cancellation context in a check for hackStarted so we don't
+	// block impatient players.
+	// `assert(!m_hackStarted);
 	`assert(CancelHackAbility != none);
 
-	CancelContext = class'XComGameStateContext_Ability'.static.BuildContextFromAbility(CancelHackAbility, OriginalContext.InputContext.PrimaryTarget.ObjectID);
-	`GAMERULES.SubmitGameStateContext(CancelContext);
+	// Don't submit a cancel context if the hack has already been started because doing so refunds the cooldown
+	// so players can bypass cooldowns by quickly hitting ESC after starting a hack. Also, don't re-cancel if it
+	// has already been canceled (e.g. by players spamming the ESC key) to avoid multiple cancel states 
+	// from being submitted and potentially restoring multiple charges.
+	/// HL-Docs: ref:Bugfixes; issue:648
+	/// Cancelling a hack in progress using `Esc` no longer bypasses Haywire's cooldown
+	if (!m_hackStarted && !m_hackCanceled)
+	{
+		CancelContext = class'XComGameStateContext_Ability'.static.BuildContextFromAbility(CancelHackAbility, OriginalContext.InputContext.PrimaryTarget.ObjectID);
+		`GAMERULES.SubmitGameStateContext(CancelContext);
+		m_hackCanceled = true;
+	}
+	// End Issue #648
 
 	ClearTimer('StartScaryComputerLoopAkEvent');
 
@@ -445,7 +527,7 @@ simulated function OnCommand( string cmd, string arg )
 		}
 		else
 		{
-		bWaitingForInput = true;
+			bWaitingForInput = true;
 		}
 		break;
 	case "UnlockReward":

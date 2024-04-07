@@ -1,0 +1,53 @@
+# Listen for successful "docs" workflow runs on pull requests,
+# fetch the artifact containing the diff and PR number,
+# create or update a comment containing the diff.
+
+name: check_post_patch
+
+on:
+  workflow_run:
+    workflows: ["docs"]
+    types: 
+      - completed
+
+# Ensures that only one deploy task per branch/environment will run at a time.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/setup-python@v4
+      with:
+        python-version: '3.x'
+    - name: Checkout
+      uses: actions/checkout@v3
+    - name: Download artifacts
+      id: check-diff
+      shell: bash {0}
+      if: ${{ github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success' }}
+      run: |
+        python -m pip --disable-pip-version-check install requests
+        python ./.scripts/extract_diff.py ${{ github.event.workflow_run.artifacts_url }} ${{ secrets.GITHUB_TOKEN }}
+        if [ $? -eq 0 ]
+        then
+          echo "has-diff=true" >> $GITHUB_OUTPUT
+          echo "pr-number=$(cat pr_number.txt)" >> $GITHUB_OUTPUT
+        fi;
+    - name: Find existing comment
+      uses: peter-evans/find-comment@v2
+      id: find-comment
+      if: ${{ steps.check-diff.outputs.has-diff }}
+      with:
+        issue-number: ${{ steps.check-diff.outputs.pr-number }}
+        body-includes: GHA-event-listeners-diff
+    - name: Create PR comment
+      if: ${{ steps.check-diff.outputs.has-diff }}
+      uses: peter-evans/create-or-update-comment@v3
+      with:
+        edit-mode: replace
+        issue-number: ${{ steps.check-diff.outputs.pr-number }}
+        comment-id: ${{ steps.find-comment.outputs.comment-id }}
+        body-file: msg.txt

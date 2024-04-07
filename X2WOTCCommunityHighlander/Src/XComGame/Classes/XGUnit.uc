@@ -516,13 +516,16 @@ simulated function ApplyLoadoutFromGameState(XComGameState_Unit UnitState, XComG
 	local CHItemSlot SlotIter;
 	local EInventorySlot Slot;
 
+	// Variable for Issue #885
+	local array<EInventorySlot> PresEquipMultiSlots;
+
 	kInventory = GetInventory();
 	if( kInventory == none )
 	{
 		kInventory = Spawn(class'XGInventory', Owner);
 		SetInventory(kInventory);
 		kInventory.PostInit();
-	}	
+	}
 
 	foreach UnitState.InventoryItems(ItemReference)
 	{
@@ -545,7 +548,7 @@ simulated function ApplyLoadoutFromGameState(XComGameState_Unit UnitState, XComG
 			if( kItem != none && (kItem.m_kOwner == none || kItem.m_kEntity == none) )
 			{
 				kItem.m_kOwner = self;
-				kItem.m_kEntity = kItem.CreateEntity(ItemState);		
+				kItem.m_kEntity = kItem.CreateEntity(ItemState);
 
 				ItemWeapon = XComWeapon(kItem.m_kEntity);
 				if( ItemWeapon != none )
@@ -557,7 +560,7 @@ simulated function ApplyLoadoutFromGameState(XComGameState_Unit UnitState, XComG
 			if( kItem != none && kItem.m_kEntity != none )
 			{
 				bMultipleItems = ItemState.ItemLocation == eSlot_RearBackPack;
-				kInventory.AddItem(kItem, ItemState.ItemLocation, bMultipleItems);		
+				kInventory.AddItem(kItem, ItemState.ItemLocation, bMultipleItems);
 			}
 		}
 	}
@@ -586,9 +589,17 @@ simulated function ApplyLoadoutFromGameState(XComGameState_Unit UnitState, XComG
 	SlotTemplates = class'CHItemSlot'.static.GetAllSlotTemplates();
 	foreach SlotTemplates(SlotIter)
 	{
-		if (!SlotIter.IsMultiItemSlot && SlotIter.NeedsPresEquip)
+		if (SlotIter.NeedsPresEquip)
 		{
-			PresEquipSlots.AddItem(SlotIter.InvSlot);
+			// Start Issue #885
+			if (SlotIter.IsMultiItemSlot)
+			{
+				PresEquipMultiSlots.AddItem(SlotIter.InvSlot);
+			}// End Issue #885
+			else
+			{
+				PresEquipSlots.AddItem(SlotIter.InvSlot);
+			}
 		}
 	}
 	foreach PresEquipSlots(Slot)
@@ -601,6 +612,11 @@ simulated function ApplyLoadoutFromGameState(XComGameState_Unit UnitState, XComG
 		}
 	}
 	// Issue #118 End
+	
+	// Issue #885 Start
+	PresEquipMultiSlots.AddItem(eInvSlot_Utility);
+	PresEquipMultiSlotItems(UnitState, FullGameState, kInventory, PresEquipMultiSlots);
+	// Issue #885 End
 
 	if (kInventory.m_kPrimaryWeapon != none)
 		kItemToEquip = kInventory.m_kPrimaryWeapon;
@@ -612,6 +628,36 @@ simulated function ApplyLoadoutFromGameState(XComGameState_Unit UnitState, XComG
 		kInventory.EquipItem( kItemToEquip, true, true );
 	}
 }
+
+// Issue #885 Start
+simulated private function PresEquipMultiSlotItems(XComGameState_Unit UnitState, XComGameState FullGameState, XGInventory kInventory, array<EInventorySlot> PresEquipMultiSlots)
+{
+	local array<XComGameState_Item> ItemStates;
+	local XComGameState_Item        ItemState;
+	local CHHelpers                 CHHelpersObj;
+	local XGWeapon                  ItemVis;
+	local EInventorySlot            PresEquipMultiSlot;
+
+	CHHelpersObj = class'CHHelpers'.static.GetCDO();
+	if (CHHelpersObj == none)
+	{
+		return;
+	}
+
+	foreach PresEquipMultiSlots(PresEquipMultiSlot)
+	{
+		ItemStates = UnitState.GetAllItemsInSlot(PresEquipMultiSlot,,, true);
+		foreach ItemStates(ItemState)
+		{
+			if (CHHelpersObj.ShouldDisplayMultiSlotItemInTactical(UnitState, ItemState, PresEquipMultiSlot, self, FullGameState))
+			{
+				ItemVis = XGWeapon(ItemState.GetVisualizer());
+				kInventory.PresEquip(ItemVis, true);
+			}
+		}
+	}
+}
+// Issue #885 End
 
 //-------------------------------------------------------------------
 // Swap between any equippable weapons on this unit
@@ -697,7 +743,7 @@ simulated function ConstantCombatSuppress(bool bSuppress, XGUnit kTarget)
 
 	if (m_bSuppressing)
 	{
-		m_kForceConstantCombatTarget = kTarget;		
+		m_kForceConstantCombatTarget = kTarget;
 		kTarget.m_kConstantCombatUnitTargetingMe = self;
 	}
 	else 
@@ -1442,16 +1488,65 @@ function name MaybeAddPersonalityToSpeech(Name nCharSpeech)
 {
 	local XComGameState_Unit GameStateUnit;
 	local name nPersonality;
+	// Variables for Issue #317
+	local int Pidx, Sidx, Variant;
 
 	GameStateUnit = XComGameState_Unit(`XCOMHISTORY.GetGameStateForObjectID(ObjectID));
 
-	if ( GameStateUnit == none || !GameStateUnit.IsVeteran() )
+	/// HL-Docs: ref:Bugfixes; issue:215
+	/// Units are now allowed to have personality speech (affected by personality) even below "Veteran" rank
+	if ( GameStateUnit == none /*|| !GameStateUnit.IsVeteran()*/ ) // Issue #215
 	{
 		return '';
 	}
 
 	nPersonality = GameStateUnit.GetPersonalityTemplate().DataName;
-
+	// Start Issue #317
+	/// HL-Docs: feature:PersonalitySpeech; issue:317; tags:tactical,customization
+	/// The soldier speech system allows soldiers to use different voicelines
+	/// in some situations based on their attitude. For example, an "Intense" soldier 
+	/// will voice react differently to killing an enemy than a "Twitchy" one.
+	///
+	/// This behavior was hardcoded in the base game. Highlander replaces the original implementation
+	/// with the `PersonalitySpeech` config array that takes values from `XComGame.ini` config file.
+	/// This potentailly allows mods to replace the original personality speech patterns,
+	/// as well as add new patterns for new attitudes, if a mod manages to add any.
+	/// 
+	/// Example entry for the "By The Book" attitude:
+	///```ini
+	///[XComGame.CHHelpers]
+	///+PersonalitySpeech=( Personality="Personality_ByTheBook", \\
+	/// CharSpeeches = ( \\
+	///  (CharSpeech="Moving", PersonalityVariant=("Moving_BY_THE_BOOK")), \\
+	///  (CharSpeech="TargetKilled", PersonalityVariant=("TargetKilled_BY_THE_BOOK")), \\
+	///  (CharSpeech="Panic", PersonalityVariant=("Panic_BY_THE_BOOK")), \\
+	///  (CharSpeech="SoldierVIP", PersonalityVariant=("SoldierVIP_BY_THE_BOOK")), \\
+	///  (CharSpeech="UsefulVIP", PersonalityVariant=("UsefulVIP_BY_THE_BOOK")), \\
+	///  (CharSpeech="GenericVIP", PersonalityVariant=("GenericVIP_BY_THE_BOOK")), \\
+	///  (CharSpeech="HostileVIP", PersonalityVariant=("HostileVIP_BY_THE_BOOK")), \\
+	///  (CharSpeech="LootCaptured", PersonalityVariant=("LootCaptured_BY_THE_BOOK")), \\
+	///  (CharSpeech="HackWorkstation", PersonalityVariant=("HackWorkstation_BY_THE_BOOK")), \\
+	///  (CharSpeech="LootSpotted", PersonalityVariant=("LootSpotted_BY_THE_BOOK")), \\
+	///  (CharSpeech="TargetEliminated", PersonalityVariant=("TargetEliminated_BY_THE_BOOK")), \\
+	///  (CharSpeech="PickingUpBody", PersonalityVariant=("PickingUpBody_BY_THE_BOOK")) \\
+	/// ))
+	///```
+	/// Note: only one `PersonalitySpeech` entry per attitude will be taken into account, any others will be ignored.
+	/// If your mod wants to replace the original speech personality config with your own, 
+	/// you should copy the original entry to their own config exactly as it appears in the Highlander, 
+	/// and replace the `+` at the start of the entry with a `-`, which will remove the entry when your mod is loaded.
+	/// Then you can specify your own config entry for that attitude below.
+	Pidx=class'CHHelpers'.default.PersonalitySpeech.Find('Personality', nPersonality);
+	if (Pidx != INDEX_NONE)
+	{
+		Sidx=class'CHHelpers'.default.PersonalitySpeech[Pidx].CharSpeeches.Find('CharSpeech', nCharSpeech);
+		if (Sidx != INDEX_NONE)
+		{
+			Variant=Rand(class'CHHelpers'.default.PersonalitySpeech[Pidx].CharSpeeches[Sidx].PersonalityVariant.Length);
+			return class'CHHelpers'.default.PersonalitySpeech[Pidx].CharSpeeches[Sidx].PersonalityVariant[Variant];
+		}
+	}
+	/*
 	switch ( nPersonality )
 	{
 		case 'Personality_ByTheBook':
@@ -1557,6 +1652,8 @@ function name MaybeAddPersonalityToSpeech(Name nCharSpeech)
 			}
 			break;
 	}
+	*/
+	// End Issue #317
 
 	return '';
 }
@@ -3449,14 +3546,17 @@ simulated event Tick( float fDeltaT )
 			DebugShowOrientation();
 		}
 
-		if (IsInCover() && GetALocalPlayerController().CheatManager != none  && XComTacticalCheatManager(GetALocalPlayerController().CheatManager).bShowFlankingMarkers)
+		if ( GetALocalPlayerController().CheatManager != none  && XComTacticalCheatManager(GetALocalPlayerController().CheatManager).bShowFlankingMarkers)
 		{
-			DrawFlankingMarkers(GetCoverPoint(), self);
-
-			// If we're on the other team, draw flanking lines to the cursor
-			if (`BATTLE.m_kActivePlayer != GetPlayer())
+			if( IsInCover() )
 			{
-				DrawFlankingCursor(self);
+				DrawFlankingMarkers(GetCoverPoint(), self);
+
+				// If we're on the other team, draw flanking lines to the cursor
+				if (`BATTLE.m_kActivePlayer != GetPlayer())
+				{
+					DrawFlankingCursor(self);
+				}
 			}
 		}
 `endif
@@ -3583,11 +3683,15 @@ simulated static function CreateVisualizer(XComGameState FullState, XComGameStat
 	`XCOMHISTORY.SetVisualizer(SyncUnitState.ObjectID, UnitVisualizer);
 
 	UnitVisualizer.ApplyLoadoutFromGameState(SyncUnitState, FullState);
-	
-	if (UnitVisualizer.GetPawn().IsA('XComHumanPawn')) //Gives soldiers/civilians their head, hair, etc.
+
+	// Start Issue #376
+	/// HL-Docs: ref:Bugfixes; issue:376
+	/// Gremlins (and other Cosmetic Units) are now correctly tinted and patterned
+	if (UnitVisualizer.GetPawn().IsA('XComHumanPawn') || SyncUnitState.GetMyTemplate().bIsCosmetic) //Gives soldiers/civilians their head, hair, etc.
 	{	
-		XComHumanPawn(UnitVisualizer.GetPawn()).SetAppearance( SyncUnitState.kAppearance );		
+		UnitVisualizer.GetPawn().SetAppearance( SyncUnitState.kAppearance );		
 	}
+	//End Issue #376
 	else if(SyncUnitState.IsTurret()) // Attach turret base mesh and initialize the turret idle state based on team.
 	{
 		kPawn = UnitVisualizer.GetPawn();
@@ -3615,7 +3719,8 @@ simulated static function CreateVisualizer(XComGameState FullState, XComGameStat
 	{
 		Ability = XComGameState_Ability(`XCOMHISTORY.GetGameStateForObjectID(SyncUnitState.Abilities[i].ObjectID));
 
-		if( Ability.GetMyTemplate() != none ) // abilities can be removed during dev between saves
+		//Issue #295 - Add a 'none' check before accessing Ability
+		if(Ability != none && Ability.GetMyTemplate() != none ) // abilities can be removed during dev between saves
 		{
 			UnitVisualizer.GetPawn().AppendAbilityPerks( Ability.GetMyTemplate().GetPerkAssociationName() );
 		}

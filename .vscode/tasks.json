@@ -4,33 +4,72 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "build",
+            "label": "Build (final release)",
             "type": "shell",
-            "command": "powershell.exe -file '${workspaceRoot}\\.scripts\\build.ps1' -mod \"X2WOTCCommunityHighlander\" -srcDirectory '${workspaceRoot}' -sdkPath '${config:xcom.highlander.sdkroot}' -gamePath '${config:xcom.highlander.gameroot}' -final_release",
+            "command": "powershell.exe –NonInteractive –ExecutionPolicy Unrestricted -file '${workspaceRoot}\\.scripts\\build.ps1' -srcDirectory '${workspaceRoot}' -sdkPath '${config:xcom.highlander.sdkroot}' -gamePath '${config:xcom.highlander.gameroot}' -config final_release",
             "group": "build",
             "problemMatcher": []
         },
         {
-            "label": "build-debug",
+            "label": "Build (cooked)",
             "type": "shell",
-            "command": "powershell.exe -file '${workspaceRoot}\\.scripts\\build.ps1' -mod \"X2WOTCCommunityHighlander\" -srcDirectory '${workspaceRoot}' -sdkPath '${config:xcom.highlander.sdkroot}' -gamePath '${config:xcom.highlander.gameroot}'",
-            "group": {
-                "kind": "build",
-                "isDefault": true
-            },
+            "command": "powershell.exe –NonInteractive –ExecutionPolicy Unrestricted -file '${workspaceRoot}\\.scripts\\build.ps1' -srcDirectory '${workspaceRoot}' -sdkPath '${config:xcom.highlander.sdkroot}' -gamePath '${config:xcom.highlander.gameroot}' -config default",
+            "group": "build",
             "problemMatcher": []
         },
         {
-            "label": "debug",
+            "label": "Build (debug)",
             "type": "shell",
-            "command": "powershell.exe -file '${workspaceRoot}\\.scripts\\run.ps1' -gamePath '${config:xcom.highlander.gameroot}'",
+            "command": "powershell.exe –NonInteractive –ExecutionPolicy Unrestricted -file '${workspaceRoot}\\.scripts\\build.ps1' -srcDirectory '${workspaceRoot}' -sdkPath '${config:xcom.highlander.sdkroot}' -gamePath '${config:xcom.highlander.gameroot}' -config debug",
+            "group": "build",
+            "problemMatcher": []
+        },
+        {
+            "label": "Build (compiletest)",
+            "type": "shell",
+            "command": "powershell.exe –NonInteractive –ExecutionPolicy Unrestricted -file '${workspaceRoot}\\.scripts\\build.ps1' -srcDirectory '${workspaceRoot}' -sdkPath '${config:xcom.highlander.sdkroot}' -gamePath '${config:xcom.highlander.gameroot}' -config compiletest",
+            "group": "build",
+            "problemMatcher": []
+        },
+        {
+            "label": "Build for workshop stable version",
+            "type": "shell",
+            "command": "powershell.exe –NonInteractive –ExecutionPolicy Unrestricted -file '${workspaceRoot}\\.scripts\\build.ps1' -srcDirectory '${workspaceRoot}' -sdkPath '${config:xcom.highlander.sdkroot}' -gamePath '${config:xcom.highlander.gameroot}' -config stable",
+            "group": "build",
+            "problemMatcher": []
+        },
+        {
+            "label": "runGame",
+            "type": "shell",
+            "command": "powershell.exe –NonInteractive –ExecutionPolicy Unrestricted -file '${workspaceRoot}\\.scripts\\run.ps1' -gamePath '${config:xcom.highlander.gameroot}'",
             "problemMatcher": []
         },
         {
             "label": "runUnrealEditor",
             "type": "shell",
-            "command": "powershell.exe -file '${workspaceRoot}\\.scripts\\runUnrealEditor.ps1' -sdkPath '${config:xcom.highlander.sdkroot}'",
+            "command": "powershell.exe –NonInteractive –ExecutionPolicy Unrestricted -file '${workspaceRoot}\\.scripts\\runUnrealEditor.ps1' -sdkPath '${config:xcom.highlander.sdkroot}'",
             "problemMatcher": []
-        }
+        },
+        {
+            "label": "updateVersions",
+            "type": "shell",
+            "command": "powershell.exe –NonInteractive –ExecutionPolicy Unrestricted -file '${workspaceRoot}\\.scripts\\update_version.ps1' -ps '${workspaceRoot}\\VERSION.ps1' -srcDirectory '${workspaceRoot}' -no_cache",
+            "problemMatcher": []
+        },
+        {
+            "label": "makeDocs",
+            "type": "shell",
+            "command": "python .\\.scripts\\make_docs.py --indirsfile .\\docs_directories.txt --outdir .\\target --docsdir .\\docs_src --dumpelt .\\target\\CHL_Event_Compiletest.uc",
+            "problemMatcher": []
+        },
+        {
+            "label": "testDocs",
+            "type": "shell",
+            "options": {
+                "cwd": "${workspaceRoot}\\test\\docs"
+            },
+            "command": "python ..\\..\\.scripts\\make_docs.py .\\test_src --outdir .\\test_output --docsdir .\\test_tags --dumpelt .\\test_output\\CHL_Event_Compiletest.uc | % {$_.replace('\\', '/')} | Out-File .\\test_output\\stdout.log -Encoding ASCII",
+            "problemMatcher": []
+        },
     ]
 }

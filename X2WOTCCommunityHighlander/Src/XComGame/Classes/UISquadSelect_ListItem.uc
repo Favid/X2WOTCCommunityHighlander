@@ -141,7 +141,8 @@ simulated function UpdateData(optional int Index = -1, optional bool bDisableEdi
 	local X2AbilityTemplateManager AbilityTemplateManager;
 	local SoldierBond BondData;
 	local StateObjectReference BondmateRef;
-	local XComGameState_ResistanceFaction FactionState;
+	//local XComGameState_ResistanceFaction FactionState; //Issue #1134, not needed
+	local StackedUIIconData StackedClassIcon; // Variable for issue #1134
 
 	// Variables for Issue #118
 	local CHUIItemSlotEnumerator En;
@@ -200,7 +201,7 @@ simulated function UpdateData(optional int Index = -1, optional bool bDisableEdi
 	//	if( Navigator.SelectedIndex == -1 )
 //			Navigator.SelectFirstAvailable();
 
-		FactionState = Unit.GetResistanceFaction();
+		//FactionState = Unit.GetResistanceFaction(); //Issue #1134, not needed
 
 		// Issue #118 Start
 		En = class'CHUIItemSlotEnumerator'.static.CreateEnumerator(Unit, , , true /* UseUnlockHints */);
@@ -300,11 +301,11 @@ simulated function UpdateData(optional int Index = -1, optional bool bDisableEdi
 		bEditDisabled = bDisableEdit; //Used in controller nav
 		bDismissDisabled = bDisableDismiss; //used in controller nav
 
-		// Start Issue #106
-		AS_SetFilled( class'UIUtilities_Text'.static.GetColoredText(Caps(class'X2ExperienceConfig'.static.GetRankName(Unit.GetRank(), Unit.GetSoldierClassTemplateName())), eUIState_Normal, 18),
+		// Start Issue #106, #408
+		AS_SetFilled( class'UIUtilities_Text'.static.GetColoredText(Caps(Unit.GetSoldierRankName()), eUIState_Normal, 18),
 					  class'UIUtilities_Text'.static.GetColoredText(Caps(NameStr), eUIState_Normal, 22),
 					  class'UIUtilities_Text'.static.GetColoredText(Caps(Unit.GetName(eNameType_Nick)), eUIState_Header, 28),
-					  Unit.GetSoldierClassIcon(), class'UIUtilities_Image'.static.GetRankIcon(Unit.GetRank(), Unit.GetSoldierClassTemplateName()),
+					  Unit.GetSoldierClassIcon(), Unit.GetSoldierRankIcon(),
 					  class'UIUtilities_Text'.static.GetColoredText(m_strEdit, bDisableEdit ? eUIState_Disabled : eUIState_Normal),
 					  class'UIUtilities_Text'.static.GetColoredText(m_strDismiss, bDisableDismiss ? eUIState_Disabled : eUIState_Normal),
 					  class'UIUtilities_Text'.static.GetColoredText(PrimaryWeaponTemplate.GetItemFriendlyName(PrimaryWeapon.ObjectID), bDisableLoadout ? eUIState_Disabled : eUIState_Normal),
@@ -312,7 +313,7 @@ simulated function UpdateData(optional int Index = -1, optional bool bDisableEdi
 					  class'UIUtilities_Text'.static.GetColoredText(GetHeavyWeaponName(), bDisableLoadout ? eUIState_Disabled : eUIState_Normal),
 					  class'UIUtilities_Text'.static.GetColoredText(GetHeavyWeaponDesc(), bDisableLoadout ? eUIState_Disabled : eUIState_Normal),
 					  (bCanPromote ? m_strPromote : ""), Unit.IsPsiOperative() || (Unit.HasPsiGift() && Unit.GetRank() < 2), ClassStr);
-		// End Issue #106
+		// End Issue #106, #408
 
 		AS_SetUnitHealth(class'UIUtilities_Strategy'.static.GetUnitCurrentHealth(Unit), class'UIUtilities_Strategy'.static.GetUnitMaxHealth(Unit));
 
@@ -325,14 +326,17 @@ simulated function UpdateData(optional int Index = -1, optional bool bDisableEdi
 			AS_SetUnitWill(-1, "");
 		}
 
-		if( FactionState == none )
+		// Start Issue #1134
+		StackedClassIcon = Unit.GetStackedClassIcon();
+		if (StackedClassIcon.Images.Length > 0)
 		{
-			MC.FunctionVoid("clearUnitFactionIcon");
+			AS_SetFactionIcon(StackedClassIcon);
 		}
 		else
 		{
-			AS_SetFactionIcon(FactionState.GetFactionIcon());
+			MC.FunctionVoid("clearUnitFactionIcon");
 		}
+		// End Issue #1134
 
 		if(Unit.BelowReadyWillState())
 		{
